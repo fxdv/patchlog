@@ -1,0 +1,30 @@
+PATCHLOG ROADMAP
+================
+
+Reliable core
+-------------
+
+- Keep planning side-effect-free and apply mutations only after review and
+  grounded policy checks.
+- Keep version bumps transactional and Git staging limited to the exact files
+  returned by the bump plan.
+- Preserve dry-run immutability with filesystem and Git-state E2E tests.
+
+Grounded release signals
+------------------------
+
+- Import true code coverage from CI coverage artifacts.
+- Build dependency risk from language-aware dependency graphs.
+- Derive PR lead time and deployment cycle time from PR, merge, deployment,
+  and production timestamps.
+- Keep touched-test-file ratio, change-complexity proxy, cross-cutting-change
+  risk, contribution concentration, commit span, and release age descriptive
+  only. Never use these proxies as release gates.
+
+Advanced workflows
+------------------
+
+- Continue moving provider publication, Confluence, trend dashboards, drift,
+  and curation behind focused subcommands and explicit interfaces.
+- Keep DPI, team-health scoring, and gamification opt-in under labs until their
+  validity, privacy impact, and organizational use are independently reviewed.

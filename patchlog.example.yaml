@@ -1,0 +1,50 @@
+repo: your-org/your-repo
+
+ai:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
+  max_tokens: 4096
+  max_input_chars: 120000
+  exclude_files:
+    - .env
+    - .env.*
+    - "*.pem"
+    - "*.key"
+    - "**/secrets.*"
+    - "**/vendor/**"
+    - "**/generated/**"
+
+author:
+  show: true
+
+bump:
+  auto_detect: true
+  files: []
+
+gate:
+  enabled: false
+  min_conventional_ratio: 0.8
+
+provider:
+  type: github
+  token: $GIT_PROVIDER_TOKEN
+  repo: your-org/your-repo
+  draft: true
+
+security:
+  allow_insecure_credentials: false
+
+trends:
+  store: true
+  count: 5
+
+sections:
+  feat: Features
+  fix: Bug Fixes
+  perf: Performance Improvements
+  refactor: Code Refactoring
+  docs: Documentation
+  test: Tests
+  ci: CI / Build
+  chore: Chores

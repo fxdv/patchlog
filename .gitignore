@@ -1,0 +1,22 @@
+# Local configuration may contain credentials.
+patchlog.yaml
+.env
+.env.*
+
+# Runtime state and generated reports.
+.patchlog/
+patchlog
+report-*.html
+release-notes.md
+changelog-entry.md
+
+# Go build/test output.
+*.test
+*.out
+coverage.*
+dist/
+
+# Editors and operating systems.
+.DS_Store
+.idea/
+.vscode/
