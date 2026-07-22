@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release tag to recover
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,25 +22,60 @@ jobs:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - name: Verify immutable release tag
+        id: release
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+              echo "release recovery must be dispatched from main" >&2
+              exit 1
+            fi
+            release_tag="${DISPATCH_TAG}"
+          else
+            release_tag="${PUSH_TAG}"
+          fi
+
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release tag: ${release_tag}" >&2
+            exit 1
+          fi
+
+          git fetch --force origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+          if [ "$(git cat-file -t "${release_tag}")" != "tag" ]; then
+            echo "release tag ${release_tag} must be annotated" >&2
+            exit 1
+          fi
+
+          release_version="$(cat VERSION)"
+          expected_tag="v${release_version}"
+          if [ -z "${release_version}" ] || [ "${release_tag}" != "${expected_tag}" ]; then
+            echo "release tag ${release_tag} does not match VERSION (${expected_tag})" >&2
+            exit 1
+          fi
+
+          tag_commit="$(git rev-parse "${release_tag}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [ "${tag_commit}" != "${head_commit}" ]; then
+            echo "remote release tag ${release_tag} targets ${tag_commit}, checkout is ${head_commit}" >&2
+            exit 1
+          fi
+
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.22.x'
           cache: true
-      - name: Verify release tag matches VERSION
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          release_version="$(cat VERSION)"
-          expected_tag="v${release_version}"
-          if [ -z "${release_version}" ] || [ "${RELEASE_TAG}" != "${expected_tag}" ]; then
-            echo "release tag ${RELEASE_TAG} does not match VERSION (${expected_tag})" >&2
-            exit 1
-          fi
       - name: Run required quality gate
         run: bash scripts/gate.sh
       - name: Build immutable release artifacts
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ steps.release.outputs.tag }}
         run: |
           mkdir -p dist
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
@@ -54,13 +95,18 @@ jobs:
           sha256sum *.tar.gz > SHA256SUMS
       - name: Verify installation artifact and checksums
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ steps.release.outputs.tag }}
         run: |
-          cd dist
-          sha256sum --check SHA256SUMS
-          mkdir verify
-          tar -C verify -xzf "patchlog_${VERSION}_linux_amd64.tar.gz"
-          "verify/patchlog_${VERSION}_linux_amd64/patchlog" --version | grep -F "patchlog ${VERSION}"
+          set -euo pipefail
+
+          (
+            cd dist
+            sha256sum --check SHA256SUMS
+          )
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "${verify_dir}"' EXIT
+          tar -C "${verify_dir}" -xzf "dist/patchlog_${VERSION}_linux_amd64.tar.gz"
+          "${verify_dir}/patchlog_${VERSION}_linux_amd64/patchlog" --version | grep -F "patchlog ${VERSION}"
       - name: Sign build provenance attestations
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
@@ -68,4 +114,22 @@ jobs:
       - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          assets=(
+            "dist/patchlog_${RELEASE_TAG}_linux_amd64.tar.gz"
+            "dist/patchlog_${RELEASE_TAG}_linux_arm64.tar.gz"
+            "dist/patchlog_${RELEASE_TAG}_darwin_amd64.tar.gz"
+            "dist/patchlog_${RELEASE_TAG}_darwin_arm64.tar.gz"
+            "dist/patchlog_${RELEASE_TAG}_windows_amd64.tar.gz"
+            "dist/SHA256SUMS"
+          )
+          for asset in "${assets[@]}"; do
+            if [ ! -f "${asset}" ]; then
+              echo "missing release asset: ${asset}" >&2
+              exit 1
+            fi
+          done
+          gh release create "${RELEASE_TAG}" "${assets[@]}" --verify-tag --generate-notes
