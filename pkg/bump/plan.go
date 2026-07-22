@@ -33,6 +33,30 @@ type Plan struct {
 	Changes        []FileChange
 }
 
+// Clone returns a deep copy suitable for embedding in a higher-level immutable
+// release plan without sharing mutable byte slices with the caller.
+func (p *Plan) Clone() *Plan {
+	if p == nil {
+		return nil
+	}
+	clone := &Plan{
+		RepoPath:       p.RepoPath,
+		CurrentVersion: p.CurrentVersion,
+		NewVersion:     p.NewVersion,
+		Changes:        make([]FileChange, len(p.Changes)),
+	}
+	for i, change := range p.Changes {
+		clone.Changes[i] = FileChange{
+			Path:         change.Path,
+			Before:       append([]byte(nil), change.Before...),
+			After:        append([]byte(nil), change.After...),
+			Mode:         change.Mode,
+			absolutePath: change.absolutePath,
+		}
+	}
+	return clone
+}
+
 // CreatePlan inspects all supported manifests and returns the exact mutations
 // required for a bump. When autoDetect is false, only extraFiles are planned.
 func CreatePlan(repoPath string, level Level, extraFiles []string, autoDetect bool) (*Plan, error) {

@@ -371,7 +371,7 @@ func TestDraftFlagTrue(t *testing.T) {
 	}
 }
 
-func TestGitLabCreateReleaseNonDraft(t *testing.T) {
+func TestGitLabCreateReleaseUsesExistingTagWithoutHEADFallback(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -380,8 +380,8 @@ func TestGitLabCreateReleaseNonDraft(t *testing.T) {
 		}
 		var req gitlabReleaseReq
 		json.NewDecoder(r.Body).Decode(&req)
-		if req.Ref != "HEAD" {
-			t.Errorf("expected ref HEAD, got %q", req.Ref)
+		if req.Ref != "" {
+			t.Errorf("expected no mutable ref fallback, got %q", req.Ref)
 		}
 		resp := gitlabReleaseResp{TagName: "1.0.0"}
 		resp.Links.Self = fmt.Sprintf("%s/projects/1/releases/1.0.0", srv.URL)

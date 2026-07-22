@@ -5,7 +5,7 @@ patchlog.yaml
 
 # Runtime state and generated reports.
 .patchlog/
-patchlog
+/patchlog
 report-*.html
 release-notes.md
 changelog-entry.md

@@ -255,7 +255,7 @@ type gitlabReleaseReq struct {
 	Name        string `json:"name"`
 	TagName     string `json:"tag_name"`
 	Description string `json:"description"`
-	Ref         string `json:"ref"`
+	Ref         string `json:"ref,omitempty"`
 }
 
 type gitlabReleaseResp struct {
@@ -328,7 +328,6 @@ func (p *gitlabProvider) CreateRelease(ctx context.Context, version, notes strin
 		Name:        version,
 		TagName:     version,
 		Description: notes,
-		Ref:         "HEAD",
 	}
 	data, _ := json.Marshal(body)
 	raw, err := p.do(ctx, "POST", "/releases", data)

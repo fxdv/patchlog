@@ -183,6 +183,7 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 	bin := buildBinary(t)
 	repo := createTestRepo(t, []string{"feat: add release behavior"})
 	writeConfig(t, repo, "", confluenceServer.URL, providerServer.URL, "github")
+	commitTestConfig(t, repo)
 
 	cfgPath := filepath.Join(repo, "patchlog.yaml")
 	cmd := exec.Command(bin,
@@ -191,6 +192,8 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 		"--from", "v0.1.0",
 		"--config", cfgPath,
 		"--bump", "minor",
+		"--tag",
+		"--push",
 		"--publish",
 		"--confluence",
 	)
@@ -204,7 +207,7 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 	if confluenceCalls.Load() != 0 {
 		t.Fatalf("later Confluence action ran after provider failure (%d calls)", confluenceCalls.Load())
 	}
-	if !strings.Contains(string(out), "after [version bump] completed") {
+	if !strings.Contains(string(out), "after [version bump, git commit/tag/push] completed") {
 		t.Fatalf("partial completion was not disclosed:\n%s", out)
 	}
 	version, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
@@ -233,6 +236,7 @@ func TestE2ELaterRemoteFailureReportsEarlierRemoteCompletion(t *testing.T) {
 	bin := buildBinary(t)
 	repo := createTestRepo(t, []string{"feat: add release behavior"})
 	writeConfig(t, repo, "", confluenceServer.URL, providerServer.URL, "github")
+	commitTestConfig(t, repo)
 
 	cmd := exec.Command(bin,
 		"release",
@@ -240,6 +244,8 @@ func TestE2ELaterRemoteFailureReportsEarlierRemoteCompletion(t *testing.T) {
 		"--from", "v0.1.0",
 		"--config", filepath.Join(repo, "patchlog.yaml"),
 		"--bump", "minor",
+		"--tag",
+		"--push",
 		"--publish",
 		"--confluence",
 		"--changelog",
@@ -254,7 +260,7 @@ func TestE2ELaterRemoteFailureReportsEarlierRemoteCompletion(t *testing.T) {
 	if confluenceCalls.Load() == 0 {
 		t.Fatal("Confluence failure was not reached")
 	}
-	if !strings.Contains(string(out), "after [version bump, provider publish] completed") {
+	if !strings.Contains(string(out), "after [version bump, git commit/tag/push, provider publish] completed") {
 		t.Fatalf("earlier remote completion was not disclosed:\n%s", out)
 	}
 	if _, statErr := os.Stat(filepath.Join(repo, "CHANGELOG.md")); !os.IsNotExist(statErr) {

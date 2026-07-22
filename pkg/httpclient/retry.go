@@ -21,6 +21,7 @@ var DefaultRetry = RetryConfig{
 }
 
 func DoWithRetry(client *http.Client, req *http.Request, cfg RetryConfig) (*http.Response, error) {
+	retryable := retryableRequest(req)
 	var bodyBytes []byte
 	if req.Body != nil {
 		bodyBytes, _ = io.ReadAll(req.Body)
@@ -37,7 +38,7 @@ func DoWithRetry(client *http.Client, req *http.Request, cfg RetryConfig) (*http
 			if ctx := req.Context(); ctx != nil && ctx.Err() != nil {
 				return nil, err
 			}
-			if attempt >= cfg.MaxAttempts-1 {
+			if !retryable || attempt >= cfg.MaxAttempts-1 {
 				return nil, err
 			}
 			select {
@@ -48,7 +49,7 @@ func DoWithRetry(client *http.Client, req *http.Request, cfg RetryConfig) (*http
 			continue
 		}
 
-		shouldRetry := resp.StatusCode >= 500 || resp.StatusCode == 429
+		shouldRetry := retryable && (resp.StatusCode >= 500 || resp.StatusCode == 429)
 		if !shouldRetry || attempt >= cfg.MaxAttempts-1 {
 			return resp, nil
 		}
@@ -62,6 +63,20 @@ func DoWithRetry(client *http.Client, req *http.Request, cfg RetryConfig) (*http
 		case <-req.Context().Done():
 			return nil, req.Context().Err()
 		}
+	}
+}
+
+// retryableRequest is deliberately conservative. Unsafe methods are retried
+// only when the caller supplies an idempotency key understood by the server.
+func retryableRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return req.Header.Get("Idempotency-Key") != ""
 	}
 }
 
