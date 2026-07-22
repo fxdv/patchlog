@@ -49,6 +49,24 @@ provider:
 	}
 }
 
+func commitTestConfig(t *testing.T, repo string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"add", "patchlog.yaml"},
+		{"commit", "-m", "chore: configure release test"},
+		{"push", "origin", "HEAD"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+}
+
 func newMockJiraServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +248,8 @@ func TestE2EGitHubPublish(t *testing.T) {
 	})
 
 	writeConfig(t, repo, "", "", githubServer.URL, "github")
-	s := runPatchlog(t, bin, repo, "release", "--publish")
+	commitTestConfig(t, repo)
+	s := runPatchlog(t, bin, repo, "release", "--bump", "patch", "--tag", "--push", "--publish")
 
 	if !strings.Contains(s, "Publishing release draft") {
 		t.Errorf("output should indicate publishing, got:\n%s", s)
@@ -258,6 +277,7 @@ func TestE2EFullPipeline(t *testing.T) {
 	})
 
 	writeConfig(t, repo, jiraServer.URL, confluenceServer.URL, githubServer.URL, "github")
+	commitTestConfig(t, repo)
 
 	cfgPath := filepath.Join(repo, "patchlog.yaml")
 	cmd := exec.Command(bin,
@@ -266,6 +286,8 @@ func TestE2EFullPipeline(t *testing.T) {
 		"--from", "v0.1.0",
 		"--config", cfgPath,
 		"--bump", "auto",
+		"--tag",
+		"--push",
 		"--publish",
 		"--confluence",
 	)

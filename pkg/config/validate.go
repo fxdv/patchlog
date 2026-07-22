@@ -35,6 +35,16 @@ func (ve ValidationErrors) HasErrors() bool {
 func (c Config) Validate() error {
 	var errs ValidationErrors
 
+	for field, raw := range map[string]string{
+		"links.commit":  c.Links.Commit,
+		"links.issue":   c.Links.Issue,
+		"links.compare": c.Links.Compare,
+	} {
+		if err := validateURLTemplate(field, raw); err != nil {
+			errs = append(errs, *err)
+		}
+	}
+
 	if c.AI.Provider != "" {
 		switch c.AI.Provider {
 		case "ollama", "openai", "anthropic":
@@ -321,6 +331,17 @@ func validateURL(field, raw string) *ValidationError {
 		}
 	}
 	return nil
+}
+
+func validateURLTemplate(field, raw string) *ValidationError {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	// URL templates intentionally use fmt-style %s placeholders. Substitute a
+	// safe token before structural parsing so escaped output cannot smuggle an
+	// executable URL scheme into HTML or Markdown links.
+	return validateURL(field, strings.ReplaceAll(raw, "%s", "placeholder"))
 }
 
 func validateCredentialTransport(field, rawURL, credential string, allowInsecure bool) *ValidationError {

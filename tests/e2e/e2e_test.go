@@ -55,6 +55,16 @@ func createTestRepo(t *testing.T, commits []string) string {
 		run("git", "commit", "-m", msg)
 	}
 
+	// Every orchestration fixture has a real bare origin so release preflight,
+	// atomic branch/tag push, and immutable remote-ref verification are tested.
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	remoteCmd := exec.Command("git", "init", "--bare", remote)
+	if out, err := remoteCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	run("git", "remote", "add", "origin", remote)
+	run("git", "push", "-u", "origin", "HEAD", "--tags")
+
 	return dir
 }
 

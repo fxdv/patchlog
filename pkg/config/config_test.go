@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -482,6 +483,24 @@ func TestValidateInvalidDepsRegistryURL(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for invalid deps registry URL")
+	}
+}
+
+func TestValidateRejectsUnsafeLinkScheme(t *testing.T) {
+	cfg := Default()
+	cfg.Links.Commit = "javascript:alert(%s)"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "links.commit") {
+		t.Fatalf("unsafe link validation error = %v", err)
+	}
+}
+
+func TestValidateAcceptsHTTPSLinkTemplates(t *testing.T) {
+	cfg := Default()
+	cfg.Links.Commit = "https://github.com/%s/commit/%s"
+	cfg.Links.Issue = "https://github.com/%s/issues/%s"
+	cfg.Links.Compare = "https://github.com/%s/compare/%s...%s"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid link templates rejected: %v", err)
 	}
 }
 

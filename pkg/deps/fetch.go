@@ -91,7 +91,8 @@ func fetchNPM(ctx context.Context, client *http.Client, c *Change, opts FetchOpt
 		} `json:"repository"`
 		Readme string `json:"readme"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := httpclient.ReadResponse(resp)
+	if err != nil || json.Unmarshal(body, &result) != nil {
 		return
 	}
 
@@ -143,7 +144,8 @@ func fetchCrates(ctx context.Context, client *http.Client, c *Change, opts Fetch
 			Homepage      string `json:"homepage"`
 		} `json:"crate"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := httpclient.ReadResponse(resp)
+	if err != nil || json.Unmarshal(body, &result) != nil {
 		return
 	}
 
@@ -191,7 +193,8 @@ func fetchPyPI(ctx context.Context, client *http.Client, c *Change, opts FetchOp
 			ProjectURLs map[string]string `json:"project_urls"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := httpclient.ReadResponse(resp)
+	if err != nil || json.Unmarshal(body, &result) != nil {
 		return
 	}
 

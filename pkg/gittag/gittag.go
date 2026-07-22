@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -138,6 +139,69 @@ func (m *Manager) Commit(ctx context.Context, message string) (string, error) {
 	return m.ShortHash(ctx)
 }
 
+// CommitFiles creates a release commit from exactly files using a temporary
+// index. The caller's index is never used to assemble the commit, so unrelated
+// staged changes cannot leak into a release even when --force is explicit.
+func (m *Manager) CommitFiles(ctx context.Context, message string, files []string) (string, error) {
+	if len(files) == 0 {
+		return "", nil
+	}
+	index, err := os.CreateTemp("", "patchlog-git-index-*")
+	if err != nil {
+		return "", fmt.Errorf("create isolated git index: %w", err)
+	}
+	indexPath := index.Name()
+	if err := index.Close(); err != nil {
+		_ = os.Remove(indexPath)
+		return "", fmt.Errorf("close isolated git index: %w", err)
+	}
+	// read-tree expects a missing path or a valid index, not an empty file.
+	if err := os.Remove(indexPath); err != nil {
+		return "", fmt.Errorf("initialize isolated git index: %w", err)
+	}
+	defer os.Remove(indexPath)
+
+	env := withGitIndex(os.Environ(), indexPath)
+	if err := m.runGitWithEnv(ctx, env, "read-tree", "HEAD"); err != nil {
+		return "", fmt.Errorf("initialize isolated git index: %w", err)
+	}
+	args := append([]string{"add", "--"}, files...)
+	if err := m.runGitWithEnv(ctx, env, args...); err != nil {
+		return "", fmt.Errorf("stage release files in isolated index: %w", err)
+	}
+	if err := m.runGitWithEnv(ctx, env, "commit", "-m", message); err != nil {
+		return "", fmt.Errorf("commit isolated release index: %w", err)
+	}
+
+	// Synchronize only the committed paths in the caller's index to the new
+	// HEAD. Any unrelated entries that were staged before the release remain.
+	resetArgs := append([]string{"reset", "-q", "HEAD", "--"}, files...)
+	if err := m.runGitWithEnv(ctx, os.Environ(), resetArgs...); err != nil {
+		return "", fmt.Errorf("release commit succeeded but caller index synchronization failed: %w", err)
+	}
+	return m.ShortHash(ctx)
+}
+
+func (m *Manager) runGitWithEnv(ctx context.Context, env []string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = m.RepoPath
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func withGitIndex(env []string, indexPath string) []string {
+	clean := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "GIT_INDEX_FILE=") {
+			clean = append(clean, entry)
+		}
+	}
+	return append(clean, "GIT_INDEX_FILE="+indexPath)
+}
+
 func (m *Manager) ShortHash(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD")
 	cmd.Dir = m.RepoPath
@@ -146,6 +210,65 @@ func (m *Manager) ShortHash(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("git rev-parse --short: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func (m *Manager) HeadCommit(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD^{commit}")
+	cmd.Dir = m.RepoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (m *Manager) ValidateRemote(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = m.RepoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("origin remote is required for --push: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("origin remote is required for --push")
+	}
+	return nil
+}
+
+// VerifyRemoteTag proves that the immutable remote tag resolves to the same
+// commit as the local tag before a provider release is created.
+func (m *Manager) VerifyRemoteTag(ctx context.Context, tag string) error {
+	localCmd := exec.CommandContext(ctx, "git", "rev-parse", "refs/tags/"+tag+"^{commit}")
+	localCmd.Dir = m.RepoPath
+	localOut, err := localCmd.Output()
+	if err != nil {
+		return fmt.Errorf("resolve local tag %s: %w", tag, err)
+	}
+	remoteCmd := exec.CommandContext(ctx, "git", "ls-remote", "--tags", "origin", "refs/tags/"+tag, "refs/tags/"+tag+"^{}")
+	remoteCmd.Dir = m.RepoPath
+	remoteOut, err := remoteCmd.Output()
+	if err != nil {
+		return fmt.Errorf("resolve remote tag %s: %w", tag, err)
+	}
+	remoteCommit := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(remoteOut)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		remoteCommit = fields[0]
+		if strings.HasSuffix(fields[1], "^{}") {
+			break
+		}
+	}
+	localCommit := strings.TrimSpace(string(localOut))
+	if remoteCommit == "" {
+		return fmt.Errorf("remote tag %s does not exist", tag)
+	}
+	if remoteCommit != localCommit {
+		return fmt.Errorf("remote tag %s resolves to %s, expected %s", tag, remoteCommit, localCommit)
+	}
+	return nil
 }
 
 func (m *Manager) CreateTag(ctx context.Context, tag, message string) error {
@@ -210,6 +333,9 @@ func (m *Manager) ValidatePlan(ctx context.Context, version string, opts Options
 		if _, err := m.CurrentBranch(ctx); err != nil {
 			return err
 		}
+		if err := m.ValidateRemote(ctx); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -252,13 +378,10 @@ func (m *Manager) Run(ctx context.Context, version string, files []string, opts 
 	}
 
 	if len(files) > 0 {
-		if err := m.Stage(ctx, files); err != nil {
-			return nil, err
-		}
 		commitMsg := fmt.Sprintf("chore(release): %s", version)
-		hash, err := m.Commit(ctx, commitMsg)
+		hash, err := m.CommitFiles(ctx, commitMsg, files)
 		if err != nil {
-			return res, fmt.Errorf("release commit failed after staging [%s]; the index and worktree retain the planned changes: %w", strings.Join(files, ", "), err)
+			return res, fmt.Errorf("release commit failed for planned files [%s]; the worktree retains the planned changes: %w", strings.Join(files, ", "), err)
 		}
 		res.Commit = hash
 	}

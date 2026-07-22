@@ -207,6 +207,37 @@ func TestRunForceOverridesDirty(t *testing.T) {
 	}
 }
 
+func TestRunUsesIsolatedIndexAndPreservesUnrelatedStagedChanges(t *testing.T) {
+	dir := initRepo(t)
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte("1.0.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("keep staged\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "unrelated.txt")
+
+	m := &Manager{RepoPath: dir}
+	if _, err := m.Run(context.Background(), "1.0.1", []string{"VERSION"}, Options{Tag: true, Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("show", "--pretty=format:", "--name-only", "HEAD"); got != "VERSION" {
+		t.Fatalf("release commit files = %q, want VERSION", got)
+	}
+	if got := run("diff", "--cached", "--name-only"); got != "unrelated.txt" {
+		t.Fatalf("staged files after release = %q, want unrelated.txt", got)
+	}
+}
+
 func TestRunNoTagReturnsEmpty(t *testing.T) {
 	dir := initRepo(t)
 	m := &Manager{RepoPath: dir}

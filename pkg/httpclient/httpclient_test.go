@@ -224,6 +224,7 @@ func TestDoWithRetryRequestBodyReplayed(t *testing.T) {
 
 	client := Default()
 	req, _ := http.NewRequest("POST", server.URL, bytes.NewReader([]byte("payload")))
+	req.Header.Set("Idempotency-Key", "release-123")
 	cfg := RetryConfig{MaxAttempts: 3, BaseDelay: 1 * time.Millisecond, MaxDelay: 5 * time.Millisecond}
 	resp, err := DoWithRetry(client, req, cfg)
 	if err != nil {
@@ -237,6 +238,42 @@ func TestDoWithRetryRequestBodyReplayed(t *testing.T) {
 		if b != "payload" {
 			t.Errorf("attempt %d: expected 'payload', got %q", i, b)
 		}
+	}
+}
+
+func TestDoWithRetryDoesNotRetryUnsafeRequestWithoutIdempotencyKey(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL, strings.NewReader("payload"))
+	cfg := RetryConfig{MaxAttempts: 3, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	resp, err := DoWithRetry(Default(), req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if attempts != 1 {
+		t.Fatalf("POST attempts = %d, want 1", attempts)
+	}
+}
+
+func TestClientRejectsCrossOriginRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	_, err := Default().Get(redirect.URL)
+	if err == nil || !strings.Contains(err.Error(), "cross-origin redirect") {
+		t.Fatalf("cross-origin redirect error = %v", err)
 	}
 }
 
