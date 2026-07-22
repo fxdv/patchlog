@@ -54,6 +54,7 @@ echo ""
 run_check "go vet"            go vet ./...
 run_check "gofmt"             bash -c 'test -z "$(gofmt -l . 2>/dev/null | grep -v vendor)"'
 run_check "build"             go build -ldflags "-X main.version=dev" -o /dev/null ./cmd/patchlog/
+run_check "release target builds" bash scripts/cross-build.sh
 run_check "unit tests"        go test ./pkg/... -count=1 -race
 run_check "integration tests" go test ./tests/integration/... -count=1
 run_check "e2e tests"         go test ./tests/e2e/... -count=1
