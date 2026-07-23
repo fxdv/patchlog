@@ -6,9 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable release tag to recover
+        description: Existing published immutable release tag to verify
         required: true
         type: string
+      verify_module_installs:
+        description: Verify @version and @latest (only when this tag is current)
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   release:
@@ -70,13 +75,24 @@ jobs:
 
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "tag_commit=${tag_commit}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Require an existing published release for recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)" = "false"
+      - if: github.event_name == 'push'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.5'
           cache: true
       - name: Run required quality gate
+        if: github.event_name == 'push'
         run: bash scripts/gate.sh
       - name: Build immutable release artifacts
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.release.outputs.tag }}
         run: |
@@ -97,6 +113,7 @@ jobs:
           cd dist
           sha256sum *.tar.gz > SHA256SUMS
       - name: Render package-manager manifests
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.release.outputs.tag }}
           REPOSITORY: ${{ github.repository }}
@@ -109,6 +126,7 @@ jobs:
             sha256sum patchlog.rb patchlog.json >> SHA256SUMS
           )
       - name: Verify installation artifact and checksums
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.release.outputs.tag }}
         run: |
@@ -123,10 +141,12 @@ jobs:
           tar -C "${verify_dir}" -xzf "dist/patchlog_${VERSION}_linux_amd64.tar.gz"
           "${verify_dir}/patchlog_${VERSION}_linux_amd64/patchlog" --version | grep -F "patchlog ${VERSION}"
       - name: Sign build provenance attestations
+        if: github.event_name == 'push'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: 'dist/*.tar.gz'
       - name: Publish GitHub release assets
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
@@ -160,7 +180,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26.5'
@@ -172,5 +192,5 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           SOURCE_DIGEST: ${{ needs.release.outputs.tag_commit }}
           VERIFY_SOURCE_IDENTITY: ${{ github.event_name == 'push' }}
-          VERIFY_MODULE_INSTALLS: ${{ github.event_name == 'push' }}
+          VERIFY_MODULE_INSTALLS: ${{ github.event_name == 'push' || inputs.verify_module_installs }}
         run: bash scripts/verify-release.sh
