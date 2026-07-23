@@ -52,7 +52,7 @@ func TestGetMiss(t *testing.T) {
 
 func TestTTLExpiry(t *testing.T) {
 	dir := t.TempDir()
-	c := New(dir, WithTTL(100*time.Millisecond))
+	c := New(dir, WithTTL(time.Minute))
 
 	err := c.Set("ns", "key1", "hello")
 	if err != nil {
@@ -65,7 +65,23 @@ func TestTTLExpiry(t *testing.T) {
 		t.Fatal("expected cache hit before TTL")
 	}
 
-	time.Sleep(150 * time.Millisecond)
+	path := c.path("ns", "key1")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cache entry: %v", err)
+	}
+	var cached entry
+	if err := json.Unmarshal(data, &cached); err != nil {
+		t.Fatalf("decode cache entry: %v", err)
+	}
+	cached.FetchedAt = time.Now().Add(-2 * time.Minute).UnixNano()
+	data, err = json.Marshal(cached)
+	if err != nil {
+		t.Fatalf("encode expired cache entry: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write expired cache entry: %v", err)
+	}
 
 	ok, _ = c.Get("ns", "key1", &got)
 	if ok {
