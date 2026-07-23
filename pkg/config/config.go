@@ -235,7 +235,7 @@ func Default() Config {
 			IncludeNarrative: true,
 		},
 		Trends: TrendsConfig{
-			Store: true,
+			Store: false,
 			Count: 5,
 			Title: "Release Trends",
 			Thresholds: TrendsThresholds{

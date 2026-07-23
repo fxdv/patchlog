@@ -36,7 +36,8 @@ security:
   allow_insecure_credentials: false
 
 trends:
-  store: true
+  # Optional analytics extension; disabled in the safe core workflow.
+  store: false
   count: 5
 
 sections:

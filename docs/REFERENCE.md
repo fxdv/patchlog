@@ -1,6 +1,8 @@
 # Patchlog complete reference
 
-Auto-generate release notes from git history. Understands conventional commits, enriches with Jira context, streams AI-powered prose, publishes to Confluence, bumps versions automatically, and accumulates changelogs — all from a single binary.
+Safely coordinate deterministic version bumps, annotated tags, and atomic
+pushes from Git history. Release notes are built in; AI, Jira, Confluence,
+provider publishing, metrics, and labs are optional extensions.
 
 ## Table of Contents
 
@@ -51,8 +53,11 @@ cp patchlog.example.yaml patchlog.yaml
 # Generate release notes from the last tag to HEAD
 patchlog
 
-# Full release pipeline — bump, prose, publish, changelog
-patchlog release --bump auto --tag --push --format prose --tone dev --publish --confluence --changelog
+# Plan the safe core release without changing local or remote state
+patchlog release --dry-run
+
+# Apply the reviewed automatic bump, annotated tag, and atomic push
+patchlog release
 ```
 
 ## Installation
@@ -286,7 +291,7 @@ patchlog validates the config on load and reports all errors before proceeding. 
 | `--metrics` | `false` | Append release metrics and code stats to output (markdown only) |
 | `--ai-enhance` | `false` | Use AI to enhance item descriptions and prepend a summary |
 | `--deps` | `false` | Detect dependency version bumps and fetch upstream changelogs |
-| `--labs` | `false` | Enable experimental people analytics and gamification |
+| `--labs` | `false` | Enable experimental DPI, health signals, people analytics, and gamification |
 | `--version` | `false` | Print version and exit |
 
 ### Examples
@@ -310,8 +315,8 @@ patchlog --from v1.2.0 --to v1.3.0
 # First release (from root commit)
 patchlog --first
 
-# Dry run — plan bumps, tags, output, and publications without mutating state
-patchlog release --bump auto --tag --push --publish --dry-run
+# Dry run the safe default bump, tag, and atomic push without mutation
+patchlog release --dry-run
 
 # Monorepo — only changes under a path
 patchlog --filter pkg/api
@@ -345,17 +350,26 @@ patchlog release --bump auto --tag --push --format prose --tone dev --publish --
 
 #### `patchlog release`
 
-The only command that accepts release mutations. It builds the complete immutable plan, completes review and the grounded gate, then enters the apply phase.
+The only command that accepts release mutations. It builds the complete
+immutable plan, completes review and the grounded gate, then enters the apply
+phase. With no explicit release-action flags, it defaults to `--bump auto --tag
+--push`:
 
 ```bash
-patchlog release --bump auto --tag --push --publish --changelog
+patchlog release --dry-run
+patchlog release
 ```
+
+Supplying any release-action flag selects a composed workflow instead of adding
+the safe defaults. For example, `patchlog release --bump minor` performs a
+bump-only release; provider publication must explicitly include
+`--bump ... --tag --push --publish`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--bump` | | Plan a `patch`, `minor`, `major`, or `auto` version bump |
-| `--tag` | `false` | Commit exactly the planned bump files and create an annotated tag |
-| `--push` | `false` | Atomically push the branch and tag (requires `--tag`) |
+| `--bump` | `auto` in the golden path | Plan a `patch`, `minor`, `major`, or `auto` version bump |
+| `--tag` | `true` in the golden path | Commit exactly the planned bump files and create an annotated tag |
+| `--push` | `true` in the golden path | Atomically push the branch and tag (requires `--tag`) |
 | `--force` | `false` | Explicitly override dirty-tree or existing-tag safeguards |
 | `--publish` | `false` | Create a provider release after local Git operations succeed |
 | `--confluence` | `false` | Publish or update a Confluence page |

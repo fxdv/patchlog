@@ -161,16 +161,17 @@ func main() {
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
 	resolveEnvVars(&cfg)
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
 	if cfg.Changelog.Accumulate && !releaseMode {
-		fmt.Fprintf(os.Stderr, "Config error: changelog.accumulate requires the focused 'patchlog release' subcommand\n")
+		fmt.Fprintln(os.Stderr, "Configuration error: changelog.accumulate requires the focused `patchlog release` subcommand.")
+		fmt.Fprintln(os.Stderr, "Next: run `patchlog release --dry-run`, or disable `changelog.accumulate` for read-only note generation.")
 		os.Exit(2)
 	}
 
@@ -488,25 +489,31 @@ func main() {
 	// final side-effect-free boundary: every requested local and remote action
 	// must pass deterministic preflight before dry-run returns or Apply begins.
 	var releasePlan *ReleasePlan
+	var requestedTrendSnapshotPath string
+	if releaseMode && cfg.Trends.Store && report.Version != "" && report.Version != "Unreleased" {
+		requestedTrendSnapshotPath = filepath.Join(repo, ".patchlog", "trends", report.Version+".json")
+	}
 	if releaseMode {
 		releasePlan, err = NewReleasePlan(ctx, ReleasePlanRequest{
-			Repo:          repo,
-			Bump:          bumpPlan,
-			TagName:       tagName,
-			TagOptions:    tagOpts,
-			Publish:       publish,
-			Confluence:    confluenceFlag,
-			Changelog:     changelogFlag || cfg.Changelog.Accumulate,
-			Trends:        trendsFlag,
-			HTMLPath:      htmlFile,
-			OutputPath:    outPath,
-			Configuration: cfg,
+			Repo:              repo,
+			Bump:              bumpPlan,
+			TagName:           tagName,
+			TagOptions:        tagOpts,
+			Publish:           publish,
+			Confluence:        confluenceFlag,
+			Changelog:         changelogFlag || cfg.Changelog.Accumulate,
+			Trends:            trendsFlag,
+			HTMLPath:          htmlFile,
+			OutputPath:        outPath,
+			TrendSnapshotPath: requestedTrendSnapshotPath,
+			Configuration:     cfg,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Release plan error: %v\n", err)
+			writeReleasePlanError(os.Stderr, err)
 			os.Exit(2)
 		}
 	}
+	trendSnapshotPath, _ := releasePlan.TrendSnapshotPath()
 
 	if dryRun {
 		displayDryRun(ctx, fetcher, rangeFrom, to, quiet)
@@ -533,6 +540,9 @@ func main() {
 		}
 		if htmlFlag && !quiet {
 			console.Step("[dry-run] Would write an HTML report")
+		}
+		if trendSnapshotPath != "" && !quiet {
+			console.Step(fmt.Sprintf("[dry-run] Would write trend snapshot: %s", trendSnapshotPath))
 		}
 		_, _ = os.Stdout.Write(output)
 		return
@@ -691,14 +701,15 @@ func main() {
 		}
 	}
 
-	if releaseMode && cfg.Trends.Store && report.Version != "" && report.Version != "Unreleased" {
+	if trendSnapshotPath != "" {
 		computeMetrics()
 		sm := buildSummaryMetrics(reportMetrics, codeStats)
 		snap := snapshotFromMetrics(report.Version, reportMetrics, codeStats, sm)
 		if err := applyState.Run(ctx, "trend snapshot write", func(context.Context) error {
 			return trends.Store(repo, snap)
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to store trend snapshot: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error storing planned trend snapshot: %v\n", err)
+			os.Exit(1)
 		}
 	}
 

@@ -40,17 +40,17 @@ func runTrends(args []string, defaultRepo string) {
 	fs.BoolVar(&confFlag, "confluence", false, "Publish trend dashboard to a separate Confluence page")
 	fs.BoolVar(&quiet, "quiet", false, "Suppress spinner output")
 	fs.BoolVar(&noUnreleased, "no-unreleased", false, "Exclude the Unreleased column")
-	fs.BoolVar(&labs, "labs", false, "Enable experimental contributor gamification")
+	fs.BoolVar(&labs, "labs", false, "[experimental] Enable contributor gamification")
 	fs.Parse(args)
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
 	resolveEnvVars(&cfg)
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
 	if count < 0 {

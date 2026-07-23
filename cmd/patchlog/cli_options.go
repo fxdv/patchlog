@@ -86,22 +86,44 @@ func parseCLI(args []string, stderr io.Writer) (cliOptions, []string, error) {
 	fs.BoolVar(&opts.infer, "infer", false, "Use AI to infer conventional commit types for uncategorized commits")
 	fs.BoolVar(&opts.semantic, "semantic", false, "Use AI to generate semantic summaries of actual code diffs")
 	fs.BoolVar(&opts.drift, "drift", false, "Compare planned Jira tickets vs delivered (plan-vs-actual)")
-	fs.BoolVar(&opts.gamify, "gamify", false, "Add experimental contributor achievements (requires --labs)")
+	fs.BoolVar(&opts.gamify, "gamify", false, "[experimental] Add contributor achievements (requires --labs)")
 	fs.BoolVar(&opts.html, "html", false, "Generate standalone HTML report with charts")
-	fs.BoolVar(&opts.labs, "labs", false, "Enable experimental people analytics and gamification")
+	fs.BoolVar(&opts.labs, "labs", false, "[experimental] Enable DPI, health signals, people analytics, and gamification")
 	fs.BoolVar(&opts.deps, "deps", false, "Detect dependency version bumps and fetch upstream changelogs")
 	fs.Usage = func() { printCLIUsage(fs, stderr) }
 	if err := fs.Parse(args); err != nil {
 		return cliOptions{}, nil, err
 	}
+	applySafeReleaseDefaults(&opts, fs)
 	return opts, fs.Args(), nil
+}
+
+func applySafeReleaseDefaults(opts *cliOptions, fs *flag.FlagSet) {
+	if opts == nil || !opts.releaseMode {
+		return
+	}
+	explicitReleaseAction := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "bump", "tag", "push", "publish", "confluence", "changelog", "trends":
+			explicitReleaseAction = true
+		}
+	})
+	if explicitReleaseAction {
+		return
+	}
+	opts.bumpLevel = "auto"
+	opts.tag = true
+	opts.push = true
 }
 
 func printCLIUsage(fs *flag.FlagSet, out io.Writer) {
 	printBanner()
-	fmt.Fprintln(out, "\nUsage: patchlog [flags]")
+	fmt.Fprintln(out, "\nUsage:")
+	fmt.Fprintln(out, "  patchlog [flags]           Generate release notes without mutations")
+	fmt.Fprintln(out, "  patchlog release [flags]   Safely bump, tag, and atomically push")
 	fmt.Fprintln(out, "\nSubcommands:")
-	fmt.Fprintln(out, "  patchlog release       Plan, review, gate, and apply release mutations")
+	fmt.Fprintln(out, "  patchlog release       Safe release; defaults to --bump auto --tag --push")
 	fmt.Fprintln(out, "  patchlog init          Interactive setup wizard")
 	fmt.Fprintln(out, "  patchlog lint          Lint commits against conventional commit standards")
 	fmt.Fprintln(out, "  patchlog audit         Audit changelog against git history")
@@ -114,7 +136,8 @@ func printCLIUsage(fs *flag.FlagSet, out io.Writer) {
 	fmt.Fprintln(out, "\nFlags:")
 	fs.PrintDefaults()
 	fmt.Fprintln(out, "\nExamples:")
+	fmt.Fprintln(out, "  patchlog release --dry-run   Plan and preflight the safe default release")
+	fmt.Fprintln(out, "  patchlog release             Apply the reviewed default release")
 	fmt.Fprintln(out, "  patchlog --from v1.0.0 --to v1.1.0")
-	fmt.Fprintln(out, "  patchlog release --bump auto --tag --push")
-	fmt.Fprintln(out, "  patchlog release --bump auto --tag --push --publish")
+	fmt.Fprintln(out, "  patchlog release --bump minor --tag --push --publish")
 }

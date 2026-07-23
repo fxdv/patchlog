@@ -90,6 +90,62 @@ func TestE2EDryRunPreservesFilesystemAndGitState(t *testing.T) {
 	}
 }
 
+func TestE2EGoldenPathDryRunPlansSafeReleaseWithoutMutation(t *testing.T) {
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+	before := snapshotRepository(t, repo)
+
+	cmd := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--dry-run")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("golden-path dry-run failed: %v\n%s", err, out)
+	}
+	for _, expected := range []string{
+		"Would bump 0.1.0",
+		"Would create tag: v0.1.1",
+		"Would atomically push branch and tag",
+	} {
+		if !strings.Contains(string(out), expected) {
+			t.Fatalf("golden-path dry-run output is missing %q:\n%s", expected, out)
+		}
+	}
+
+	after := snapshotRepository(t, repo)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("golden-path dry-run changed repository state\nbefore: %#v\nafter: %#v", before, after)
+	}
+}
+
+func TestE2EGoldenPathApplyBumpsTagsAndAtomicallyPushes(t *testing.T) {
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+
+	cmd := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("golden-path release failed: %v\n%s", err, out)
+	}
+
+	version, err := os.ReadFile(filepath.Join(repo, "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(version)) != "0.1.1" {
+		t.Fatalf("VERSION = %q, want 0.1.1", version)
+	}
+	localTag := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "v0.1.1^{commit}"))
+	localHead := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	remoteTag := strings.TrimSpace(gitOutput(t, repo, "ls-remote", "origin", "refs/tags/v0.1.1^{}"))
+	if localTag != localHead {
+		t.Fatalf("local tag target %s != HEAD %s", localTag, localHead)
+	}
+	if fields := strings.Fields(remoteTag); len(fields) != 2 || fields[0] != localHead {
+		t.Fatalf("remote tag target = %q, want %s", remoteTag, localHead)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".patchlog", "trends")); !os.IsNotExist(err) {
+		t.Fatalf("golden path wrote optional trend analytics: %v", err)
+	}
+}
+
 func TestE2EMutationsRequireReleaseSubcommand(t *testing.T) {
 	bin := buildBinary(t)
 	repo := createTestRepo(t, []string{"fix: correct release behavior"})
