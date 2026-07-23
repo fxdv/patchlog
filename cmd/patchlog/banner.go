@@ -50,7 +50,7 @@ func printBanner() {
 	b := &strings.Builder{}
 	frame := strings.Repeat("─", w)
 	b.WriteString("┌" + frame + "┐\n")
-	b.WriteString("│" + center("⚡ patchlog v"+stripV(version)) + "│\n")
+	b.WriteString("│" + center("⚡ patchlog v"+stripV(currentVersion())) + "│\n")
 	b.WriteString("│" + center("") + "│\n")
 	b.WriteString("│" + center("auto-generate release notes") + "│\n")
 	b.WriteString("│" + center("from git history") + "│\n")
