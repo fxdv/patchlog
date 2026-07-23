@@ -35,6 +35,25 @@ func (ve ValidationErrors) HasErrors() bool {
 func (c Config) Validate() error {
 	var errs ValidationErrors
 
+	if strings.TrimSpace(c.Release.ProtectedBranch) == "" {
+		errs = append(errs, ValidationError{
+			Field:   "release.protected_branch",
+			Message: "must name the branch whose green commit is finalized",
+		})
+	}
+	if strings.TrimSpace(c.Release.BranchPrefix) == "" {
+		errs = append(errs, ValidationError{
+			Field:   "release.branch_prefix",
+			Message: "must not be empty",
+		})
+	}
+	if strings.ContainsAny(c.Release.TagPrefix, " \t\r\n") {
+		errs = append(errs, ValidationError{
+			Field:   "release.tag_prefix",
+			Message: "must not contain whitespace",
+		})
+	}
+
 	for field, raw := range map[string]string{
 		"links.commit":  c.Links.Commit,
 		"links.issue":   c.Links.Issue,

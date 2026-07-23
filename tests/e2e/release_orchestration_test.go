@@ -102,8 +102,9 @@ func TestE2EGoldenPathDryRunPlansSafeReleaseWithoutMutation(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"Would bump 0.1.0",
-		"Would create tag: v0.1.1",
-		"Would atomically push branch and tag",
+		"Would create release branch: release/v0.1.1",
+		"Would push release branch: origin/release/v0.1.1",
+		"Plan fingerprint: sha256:",
 	} {
 		if !strings.Contains(string(out), expected) {
 			t.Fatalf("golden-path dry-run output is missing %q:\n%s", expected, out)
@@ -116,14 +117,11 @@ func TestE2EGoldenPathDryRunPlansSafeReleaseWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestE2EGoldenPathApplyBumpsTagsAndAtomicallyPushes(t *testing.T) {
+func TestE2EProtectedPrepareBumpsAndPushesBranchWithoutTag(t *testing.T) {
 	bin := buildBinary(t)
 	repo := createTestRepo(t, []string{"fix: correct release behavior"})
 
-	cmd := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("golden-path release failed: %v\n%s", err, out)
-	}
+	runApprovedCommand(t, bin, "release", "prepare", "--repo", repo, "--from", "v0.1.0")
 
 	version, err := os.ReadFile(filepath.Join(repo, "VERSION"))
 	if err != nil {
@@ -132,6 +130,112 @@ func TestE2EGoldenPathApplyBumpsTagsAndAtomicallyPushes(t *testing.T) {
 	if strings.TrimSpace(string(version)) != "0.1.1" {
 		t.Fatalf("VERSION = %q, want 0.1.1", version)
 	}
+	if branch := strings.TrimSpace(gitOutput(t, repo, "branch", "--show-current")); branch != "release/v0.1.1" {
+		t.Fatalf("current branch = %q, want release/v0.1.1", branch)
+	}
+	remoteBranch := strings.TrimSpace(gitOutput(t, repo, "ls-remote", "origin", "refs/heads/release/v0.1.1"))
+	if fields := strings.Fields(remoteBranch); len(fields) != 2 {
+		t.Fatalf("prepared remote branch = %q", remoteBranch)
+	}
+	if tags := strings.TrimSpace(gitOutput(t, repo, "tag", "--list", "v0.1.1")); tags != "" {
+		t.Fatalf("protected prepare created tag %q", tags)
+	}
+	if remoteMainVersion := strings.TrimSpace(gitOutput(t, repo, "show", "origin/main:VERSION")); remoteMainVersion != "0.1.0" {
+		t.Fatalf("protected prepare mutated origin/main VERSION to %q", remoteMainVersion)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".patchlog", "trends")); !os.IsNotExist(err) {
+		t.Fatalf("golden path wrote optional trend analytics: %v", err)
+	}
+}
+
+func TestE2EProtectedPrepareRequiresExactCurrentApproval(t *testing.T) {
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+	versionBefore, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
+
+	missing := exec.Command(bin, "release", "prepare", "--repo", repo, "--from", "v0.1.0")
+	missingOut, missingErr := missing.CombinedOutput()
+	if missingErr == nil {
+		t.Fatalf("prepare without approval unexpectedly succeeded:\n%s", missingOut)
+	}
+	if !strings.Contains(string(missingOut), "requires approval of plan sha256:") {
+		t.Fatalf("missing approval guidance:\n%s", missingOut)
+	}
+
+	staleFingerprint := planFingerprintForCommand(t, bin,
+		"release", "prepare", "--repo", repo, "--from", "v0.1.0",
+	)
+
+	stale := exec.Command(bin,
+		"release", "prepare",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--bump", "minor",
+		"--approve", staleFingerprint,
+	)
+	staleOut, staleErr := stale.CombinedOutput()
+	if staleErr == nil {
+		t.Fatalf("stale approval unexpectedly succeeded:\n%s", staleOut)
+	}
+	if !strings.Contains(string(staleOut), "does not match current plan") {
+		t.Fatalf("stale approval guidance:\n%s", staleOut)
+	}
+	versionAfter, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
+	if !reflect.DeepEqual(versionAfter, versionBefore) {
+		t.Fatalf("approval rejection mutated VERSION: %q -> %q", versionBefore, versionAfter)
+	}
+	if branches := strings.TrimSpace(gitOutput(t, repo, "branch", "--list", "release/v0.2.0")); branches != "" {
+		t.Fatalf("approval rejection created release branch %q", branches)
+	}
+}
+
+func TestE2EProtectedFinalizeTagsExactMergedRemoteMain(t *testing.T) {
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+
+	runApprovedCommand(t, bin, "release", "prepare", "--repo", repo, "--from", "v0.1.0")
+	gitOutput(t, repo, "switch", "main")
+	gitOutput(t, repo, "merge", "--squash", "release/v0.1.1")
+	gitOutput(t, repo, "commit", "-m", "chore(release): prepare v0.1.1")
+	gitOutput(t, repo, "push", "origin", "main")
+
+	universalPlan := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--dry-run")
+	planOut, err := universalPlan.CombinedOutput()
+	if err != nil {
+		t.Fatalf("universal finalize planning failed: %v\n%s", err, planOut)
+	}
+	if !strings.Contains(string(planOut), "Would tag exact origin/main commit") {
+		t.Fatalf("universal planner did not detect finalize phase:\n%s", planOut)
+	}
+
+	runApprovedCommand(t, bin, "release", "finalize", "--repo", repo, "--from", "v0.1.0")
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	localTag := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "v0.1.1^{commit}"))
+	remoteTag := strings.Fields(gitOutput(t, repo, "ls-remote", "origin", "refs/tags/v0.1.1^{}"))
+	if localTag != head {
+		t.Fatalf("finalized tag target %s != green main %s", localTag, head)
+	}
+	if len(remoteTag) != 2 || remoteTag[0] != head {
+		t.Fatalf("remote finalized tag = %v, want %s", remoteTag, head)
+	}
+	if tagType := strings.TrimSpace(gitOutput(t, repo, "cat-file", "-t", "v0.1.1")); tagType != "tag" {
+		t.Fatalf("finalized tag type = %q, want annotated tag", tagType)
+	}
+}
+
+func TestE2EExplicitDirectModeBumpsTagsAndAtomicallyPushes(t *testing.T) {
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+
+	runApprovedCommand(t, bin,
+		"release", "direct",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--bump", "patch",
+		"--tag",
+		"--push",
+	)
+
 	localTag := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "v0.1.1^{commit}"))
 	localHead := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
 	remoteTag := strings.TrimSpace(gitOutput(t, repo, "ls-remote", "origin", "refs/tags/v0.1.1^{}"))
@@ -140,9 +244,6 @@ func TestE2EGoldenPathApplyBumpsTagsAndAtomicallyPushes(t *testing.T) {
 	}
 	if fields := strings.Fields(remoteTag); len(fields) != 2 || fields[0] != localHead {
 		t.Fatalf("remote tag target = %q, want %s", remoteTag, localHead)
-	}
-	if _, err := os.Stat(filepath.Join(repo, ".patchlog", "trends")); !os.IsNotExist(err) {
-		t.Fatalf("golden path wrote optional trend analytics: %v", err)
 	}
 }
 
@@ -229,21 +330,14 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 	}))
 	defer providerServer.Close()
 
-	var confluenceCalls atomic.Int32
-	confluenceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		confluenceCalls.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer confluenceServer.Close()
-
 	bin := buildBinary(t)
 	repo := createTestRepo(t, []string{"feat: add release behavior"})
-	writeConfig(t, repo, "", confluenceServer.URL, providerServer.URL, "github")
+	writeConfig(t, repo, "", "", providerServer.URL, "github")
 	commitTestConfig(t, repo)
 
 	cfgPath := filepath.Join(repo, "patchlog.yaml")
-	cmd := exec.Command(bin,
-		"release",
+	args := []string{
+		"release", "direct",
 		"--repo", repo,
 		"--from", "v0.1.0",
 		"--config", cfgPath,
@@ -251,8 +345,10 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 		"--tag",
 		"--push",
 		"--publish",
-		"--confluence",
-	)
+		"--changelog",
+	}
+	fingerprint := planFingerprintForCommand(t, bin, args...)
+	cmd := exec.Command(bin, append(args, "--approve", fingerprint)...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("provider failure unexpectedly succeeded:\n%s", out)
@@ -260,8 +356,8 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 	if providerCalls.Load() == 0 {
 		t.Fatal("provider was not called")
 	}
-	if confluenceCalls.Load() != 0 {
-		t.Fatalf("later Confluence action ran after provider failure (%d calls)", confluenceCalls.Load())
+	if _, statErr := os.Stat(filepath.Join(repo, "CHANGELOG.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("later changelog operation ran after provider failure: %v", statErr)
 	}
 	if !strings.Contains(string(out), "after [version bump, git commit/tag/push] completed") {
 		t.Fatalf("partial completion was not disclosed:\n%s", out)
@@ -272,7 +368,57 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 	}
 }
 
-func TestE2ELaterRemoteFailureReportsEarlierRemoteCompletion(t *testing.T) {
+func TestE2EProtectedFinalizeReportsTagBeforeProviderFailure(t *testing.T) {
+	var providerCalls atomic.Int32
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		providerCalls.Add(1)
+		http.Error(w, "provider unavailable", http.StatusInternalServerError)
+	}))
+	defer providerServer.Close()
+
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"feat: add protected release behavior"})
+	writeConfig(t, repo, "", "", providerServer.URL, "github")
+	commitTestConfig(t, repo)
+
+	runApprovedCommand(t, bin,
+		"release", "prepare",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--config", filepath.Join(repo, "patchlog.yaml"),
+	)
+	gitOutput(t, repo, "switch", "main")
+	gitOutput(t, repo, "merge", "--squash", "release/v0.2.0")
+	gitOutput(t, repo, "commit", "-m", "chore(release): prepare v0.2.0")
+	gitOutput(t, repo, "push", "origin", "main")
+
+	args := []string{
+		"release", "finalize",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--config", filepath.Join(repo, "patchlog.yaml"),
+		"--publish",
+	}
+	fingerprint := planFingerprintForCommand(t, bin, args...)
+	cmd := exec.Command(bin, append(args, "--approve", fingerprint)...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("protected provider failure unexpectedly succeeded:\n%s", out)
+	}
+	if providerCalls.Load() != 1 {
+		t.Fatalf("provider calls = %d, want 1", providerCalls.Load())
+	}
+	if !strings.Contains(string(out), "after [protected release finalize] completed") {
+		t.Fatalf("completed immutable tag was not disclosed:\n%s", out)
+	}
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	remoteTag := strings.Fields(gitOutput(t, repo, "ls-remote", "origin", "refs/tags/v0.2.0^{}"))
+	if len(remoteTag) != 2 || remoteTag[0] != head {
+		t.Fatalf("remote protected tag = %v, want %s", remoteTag, head)
+	}
+}
+
+func TestE2EDedicatedConfluenceCannotJoinReleaseTransaction(t *testing.T) {
 	var providerCalls atomic.Int32
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		providerCalls.Add(1)
@@ -296,6 +442,7 @@ func TestE2ELaterRemoteFailureReportsEarlierRemoteCompletion(t *testing.T) {
 
 	cmd := exec.Command(bin,
 		"release",
+		"direct",
 		"--repo", repo,
 		"--from", "v0.1.0",
 		"--config", filepath.Join(repo, "patchlog.yaml"),
@@ -308,19 +455,62 @@ func TestE2ELaterRemoteFailureReportsEarlierRemoteCompletion(t *testing.T) {
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("later remote failure unexpectedly succeeded:\n%s", out)
+		t.Fatalf("mixed release and Confluence workflow unexpectedly succeeded:\n%s", out)
 	}
-	if providerCalls.Load() != 1 {
-		t.Fatalf("provider calls = %d, want 1", providerCalls.Load())
+	if providerCalls.Load() != 0 {
+		t.Fatalf("provider was called before focused-subcommand validation: %d", providerCalls.Load())
 	}
-	if confluenceCalls.Load() == 0 {
-		t.Fatal("Confluence failure was not reached")
+	if confluenceCalls.Load() != 0 {
+		t.Fatalf("Confluence was called before focused-subcommand validation: %d", confluenceCalls.Load())
 	}
-	if !strings.Contains(string(out), "after [version bump, git commit/tag/push, provider publish] completed") {
-		t.Fatalf("earlier remote completion was not disclosed:\n%s", out)
+	if !strings.Contains(string(out), "moved to `patchlog confluence`") {
+		t.Fatalf("focused-subcommand guidance missing:\n%s", out)
 	}
-	if _, statErr := os.Stat(filepath.Join(repo, "CHANGELOG.md")); !os.IsNotExist(statErr) {
-		t.Fatalf("later changelog operation ran after remote failure: %v", statErr)
+	version, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
+	if strings.TrimSpace(string(version)) != "0.1.0" {
+		t.Fatalf("mixed workflow mutated VERSION: %q", version)
+	}
+}
+
+func TestE2EConfluenceChangelogDestinationRequiresFocusedSubcommand(t *testing.T) {
+	var confluenceCalls atomic.Int32
+	confluenceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		confluenceCalls.Add(1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer confluenceServer.Close()
+
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: keep Confluence outside release"})
+	writeConfig(t, repo, "", confluenceServer.URL, "", "")
+	cfgPath := filepath.Join(repo, "patchlog.yaml")
+	cfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = append(cfg, []byte("changelog:\n  accumulate: true\n  destination: confluence\n  title: Changelog\n")...)
+	if err := os.WriteFile(cfgPath, cfg, 0644); err != nil {
+		t.Fatal(err)
+	}
+	commitTestConfig(t, repo)
+
+	cmd := exec.Command(bin,
+		"release", "direct",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--config", cfgPath,
+		"--changelog",
+		"--dry-run",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("release accepted Confluence changelog destination:\n%s", out)
+	}
+	if !strings.Contains(string(out), "patchlog confluence") {
+		t.Fatalf("focused Confluence guidance missing:\n%s", out)
+	}
+	if confluenceCalls.Load() != 0 {
+		t.Fatalf("Confluence was called before focused-subcommand validation: %d", confluenceCalls.Load())
 	}
 }
 

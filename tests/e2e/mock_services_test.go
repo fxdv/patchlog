@@ -150,9 +150,12 @@ func runPatchlog(t *testing.T, bin, repo string, extraArgs ...string) string {
 	t.Helper()
 	cfgPath := filepath.Join(repo, "patchlog.yaml")
 	args := make([]string, 0, len(extraArgs)+9)
-	if len(extraArgs) > 0 && extraArgs[0] == "release" {
-		args = append(args, "release")
-		extraArgs = extraArgs[1:]
+	if len(extraArgs) > 0 {
+		switch extraArgs[0] {
+		case "release", "ai", "confluence", "metrics", "labs":
+			args = append(args, extraArgs[0])
+			extraArgs = extraArgs[1:]
+		}
 	}
 	args = append(args, "--repo", repo, "--from", "v0.1.0", "--config", cfgPath)
 	args = append(args, extraArgs...)
@@ -228,7 +231,7 @@ func TestE2EConfluencePublish(t *testing.T) {
 	})
 
 	writeConfig(t, repo, "", confluenceServer.URL, "", "")
-	s := runPatchlog(t, bin, repo, "release", "--confluence")
+	s := runPatchlog(t, bin, repo, "confluence")
 
 	if !strings.Contains(s, "Created Confluence page") {
 		t.Errorf("output should indicate Confluence page creation, got:\n%s", s)
@@ -249,7 +252,16 @@ func TestE2EGitHubPublish(t *testing.T) {
 
 	writeConfig(t, repo, "", "", githubServer.URL, "github")
 	commitTestConfig(t, repo)
-	s := runPatchlog(t, bin, repo, "release", "--bump", "patch", "--tag", "--push", "--publish")
+	s := runApprovedCommand(t, bin,
+		"release", "direct",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--config", filepath.Join(repo, "patchlog.yaml"),
+		"--bump", "patch",
+		"--tag",
+		"--push",
+		"--publish",
+	)
 
 	if !strings.Contains(s, "Publishing release draft") {
 		t.Errorf("output should indicate publishing, got:\n%s", s)
@@ -259,7 +271,7 @@ func TestE2EGitHubPublish(t *testing.T) {
 	}
 }
 
-func TestE2EFullPipeline(t *testing.T) {
+func TestE2EFocusedProviderAndConfluenceWorkflows(t *testing.T) {
 	jiraServer := newMockJiraServer(t)
 	defer jiraServer.Close()
 
@@ -280,8 +292,8 @@ func TestE2EFullPipeline(t *testing.T) {
 	commitTestConfig(t, repo)
 
 	cfgPath := filepath.Join(repo, "patchlog.yaml")
-	cmd := exec.Command(bin,
-		"release",
+	providerOutput := runApprovedCommand(t, bin,
+		"release", "direct",
 		"--repo", repo,
 		"--from", "v0.1.0",
 		"--config", cfgPath,
@@ -289,14 +301,9 @@ func TestE2EFullPipeline(t *testing.T) {
 		"--tag",
 		"--push",
 		"--publish",
-		"--confluence",
 	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("full pipeline failed: %v\n%s", err, out)
-	}
-
-	s := string(out)
+	confluenceOutput := runPatchlog(t, bin, repo, "confluence")
+	s := providerOutput + confluenceOutput
 
 	if !strings.Contains(s, "PROJ-100 summary from Jira") {
 		t.Error("should enrich PROJ-100 from mock Jira")
@@ -404,7 +411,7 @@ func TestE2EConfluenceUpdateExisting(t *testing.T) {
 	})
 
 	writeConfig(t, repo, "", confluenceServer.URL, "", "")
-	s := runPatchlog(t, bin, repo, "release", "--confluence")
+	s := runPatchlog(t, bin, repo, "confluence")
 
 	if gotVersion != nil && gotVersion.(float64) != 4 {
 		t.Errorf("expected version 4, got %v", gotVersion)

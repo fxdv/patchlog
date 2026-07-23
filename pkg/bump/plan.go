@@ -268,6 +268,16 @@ func (p *Plan) Apply() error {
 	return p.applyWithRename(atomicfile.Replace)
 }
 
+// Rollback restores every planned file to its exact pre-Apply contents. It is
+// used only when a higher-level protected prepare transaction fails before its
+// release commit is completed.
+func (p *Plan) Rollback() error {
+	if p == nil {
+		return errors.New("bump plan is nil")
+	}
+	return p.rollback(len(p.Changes))
+}
+
 func (p *Plan) applyWithRename(rename func(string, string) error) error {
 	if p == nil {
 		return errors.New("bump plan is nil")

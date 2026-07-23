@@ -18,6 +18,7 @@ type Config struct {
 	Repo       string            `yaml:"repo"`
 	AI         AIConfig          `yaml:"ai"`
 	Provider   ProviderConfig    `yaml:"provider"`
+	Release    ReleaseConfig     `yaml:"release"`
 	Bump       BumpConfig        `yaml:"bump"`
 	Jira       JiraConfig        `yaml:"jira"`
 	Confluence ConfluenceConfig  `yaml:"confluence"`
@@ -37,6 +38,14 @@ type Config struct {
 // SecurityConfig controls explicit opt-ins for unsafe integration behavior.
 type SecurityConfig struct {
 	AllowInsecureCredentials bool `yaml:"allow_insecure_credentials"`
+}
+
+// ReleaseConfig defines the protected-branch release lifecycle. Protected mode
+// is the stable product direction; direct commit/tag/push remains explicit.
+type ReleaseConfig struct {
+	ProtectedBranch string `yaml:"protected_branch"`
+	BranchPrefix    string `yaml:"branch_prefix"`
+	TagPrefix       string `yaml:"tag_prefix"`
 }
 
 // DriftConfig controls plan-vs-actual Jira ticket comparison.
@@ -216,6 +225,11 @@ func Default() Config {
 		},
 		Bump: BumpConfig{
 			AutoDetect: true,
+		},
+		Release: ReleaseConfig{
+			ProtectedBranch: "main",
+			BranchPrefix:    "release/",
+			TagPrefix:       "v",
 		},
 		Classify: ClassifyConfig{
 			LargeFeatureFiles: 5,

@@ -53,11 +53,15 @@ cp patchlog.example.yaml patchlog.yaml
 # Generate release notes from the last tag to HEAD
 patchlog
 
-# Plan the safe core release without changing local or remote state
+# Plan the next protected release phase without changing local or remote state
 patchlog release --dry-run
 
-# Apply the reviewed automatic bump, annotated tag, and atomic push
-patchlog release
+# Apply the exact approved prepare plan
+patchlog release prepare --approve sha256:<fingerprint>
+
+# After the PR and post-merge CI are green, plan and approve finalize
+patchlog release --dry-run
+patchlog release finalize --approve sha256:<fingerprint>
 ```
 
 ## Installation
@@ -96,13 +100,13 @@ The build injects the git version via `-ldflags "-X main.version=$(VERSION)"`, f
 ## How It Works
 
 ```
-git history → report + exact release plan → review → grounded gate
-                                                     │
-                                                     ▼
-                            transactional bump → commit/tag/atomic push
-                                                     │
-                                                     ▼
-                                  provider → Confluence → changelog/output
+git history → immutable plan + fingerprint → approve prepare
+                                                   │
+                                                   ▼
+                              isolated bump commit → release PR → green CI
+                                                                      │
+                                                                      ▼
+                                  new immutable plan → approve finalize → tag
 ```
 
 1. **Fetch** commits in the range `[from..to]` using `git log` (merge commits excluded)
@@ -113,18 +117,21 @@ git history → report + exact release plan → review → grounded gate
 6. **Render** as markdown, JSON, or AI-generated prose
 7. **Plan** exact local and remote mutations without changing state
 8. **Review and gate** the complete output before any mutation
-9. **Apply** the transactional bump, exact-file Git operations, and requested publications
+9. **Prepare** an exact-file release commit on a review branch
+10. **Finalize** only the exact green protected-branch commit with an annotated tag
+11. **Extend** through focused AI, Confluence, metrics, or labs subcommands
 
 ## Configuration
 
 patchlog reads from `patchlog.yaml` by default. Use `--config` or `PATCHLOG_CONFIG` to select a different path. Unknown YAML fields are rejected, so misspellings cannot silently disable security or release settings. If no config file exists, sensible defaults are used.
 
-### Minimal Config
+### Minimal protected-release config
 
 ```yaml
-ai:
-  provider: ollama
-  model: llama3.2
+release:
+  protected_branch: main
+  branch_prefix: release/
+  tag_prefix: v
 ```
 
 ### Environment Variables
@@ -288,10 +295,7 @@ patchlog validates the config on load and reports all errors before proceeding. 
 | `--review` | `false` | Write output to a temp file for manual editing before outputting |
 | `--quiet` | `false` | Suppress banner and spinner output |
 | `--no-cache` | `false` | Bypass file cache (for CI reproducibility) |
-| `--metrics` | `false` | Append release metrics and code stats to output (markdown only) |
-| `--ai-enhance` | `false` | Use AI to enhance item descriptions and prepend a summary |
 | `--deps` | `false` | Detect dependency version bumps and fetch upstream changelogs |
-| `--labs` | `false` | Enable experimental DPI, health signals, people analytics, and gamification |
 | `--version` | `false` | Print version and exit |
 
 ### Examples
@@ -301,13 +305,13 @@ patchlog validates the config on load and reports all errors before proceeding. 
 patchlog
 
 # AI-generated prose, streaming tokens to terminal
-patchlog --format prose --tone dev
+patchlog ai --format prose --tone dev
 
 # Customer-facing release notes
-patchlog --format prose --tone customer
+patchlog ai --format prose --tone customer
 
 # Executive one-paragraph summary
-patchlog --format prose --tone exec
+patchlog ai --format prose --tone exec
 
 # Specific commit range
 patchlog --from v1.2.0 --to v1.3.0
@@ -315,7 +319,7 @@ patchlog --from v1.2.0 --to v1.3.0
 # First release (from root commit)
 patchlog --first
 
-# Dry run the safe default bump, tag, and atomic push without mutation
+# Universal immutable protected-release plan
 patchlog release --dry-run
 
 # Monorepo — only changes under a path
@@ -330,11 +334,11 @@ patchlog --quiet --format json
 # Bypass cache for CI
 patchlog --no-cache --format markdown
 
-# Include metrics
-patchlog --metrics
+# Include diagnostic metrics
+patchlog metrics
 
 # AI-enhanced descriptions + summary
-patchlog --ai-enhance
+patchlog ai --ai-enhance
 
 # Detect dependency version bumps and fetch upstream changelogs
 patchlog --deps
@@ -342,41 +346,40 @@ patchlog --deps
 # Review before outputting
 patchlog --review --out RELEASE_NOTES.md
 
-# Full pipeline
-patchlog release --bump auto --tag --push --format prose --tone dev --publish --confluence --changelog
+# Explicit direct compatibility workflow
+patchlog release direct --bump auto --tag --push --publish --dry-run
 ```
 
 ### Subcommands
 
 #### `patchlog release`
 
-The only command that accepts release mutations. It builds the complete
-immutable plan, completes review and the grounded gate, then enters the apply
-phase. With no explicit release-action flags, it defaults to `--bump auto --tag
---push`:
+The universal command builds the next protected prepare or finalize plan. It
+never mutates without approval of the exact current fingerprint:
 
 ```bash
 patchlog release --dry-run
-patchlog release
+patchlog release prepare --approve sha256:<fingerprint>
+patchlog release finalize --approve sha256:<fingerprint>
 ```
 
-Supplying any release-action flag selects a composed workflow instead of adding
-the safe defaults. For example, `patchlog release --bump minor` performs a
-bump-only release; provider publication must explicitly include
-`--bump ... --tag --push --publish`.
+`prepare` creates and pushes a version-bump branch without a tag. `finalize`
+requires an exact local/remote protected-branch match and pushes only the
+annotated tag. Direct commit/tag/push requires `patchlog release direct`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--bump` | `auto` in the golden path | Plan a `patch`, `minor`, `major`, or `auto` version bump |
-| `--tag` | `true` in the golden path | Commit exactly the planned bump files and create an annotated tag |
-| `--push` | `true` in the golden path | Atomically push the branch and tag (requires `--tag`) |
-| `--force` | `false` | Explicitly override dirty-tree or existing-tag safeguards |
+| `--approve` | empty | Exact `sha256:` plan fingerprint required before mutation |
+| `--release-branch` | `release/<tag>` | Protected prepare branch identity |
+| `--bump` | `auto` for prepare | Plan a `patch`, `minor`, `major`, or `auto` version bump |
+| `--tag` | direct mode only | Commit planned bump files and create an annotated tag |
+| `--push` | direct mode only | Atomically push the branch and tag (requires `--tag`) |
+| `--force` | `false` | Direct mode only: explicitly override dirty-tree or existing-tag safeguards |
 | `--publish` | `false` | Create a provider release after local Git operations succeed |
-| `--confluence` | `false` | Publish or update a Confluence page |
 | `--changelog` | `false` | Accumulate the release into the configured changelog destination |
-| `--trends` | `false` | Publish the trends dashboard (requires `--confluence`) |
 
-The reporting command rejects these mutation flags and does not store trend snapshots. `changelog.accumulate: true` is likewise honored only by `patchlog release`.
+AI, Confluence, metrics, and labs flags are accepted only by their dedicated
+subcommands. The reporting command rejects release mutation flags.
 
 #### `patchlog init`
 
@@ -552,7 +555,7 @@ When using `--format prose`, patchlog streams tokens to stderr in real-time. For
 
 If all AI calls fail, a template fallback is used so output is never empty.
 
-### AI Enhancement (`--ai-enhance`)
+### AI Enhancement (`patchlog ai --ai-enhance`)
 
 When enabled, patchlog:
 1. Sends each section's items to the AI for rewriting (more descriptive, user-friendly)
@@ -564,12 +567,12 @@ If all sections fail AI enhancement, a warning is printed to stderr. Partial fai
 
 ```bash
 # Auto-detect bump level from commit significance
-patchlog release --bump auto
+patchlog release direct --bump auto --dry-run
 
 # Manual bump
-patchlog release --bump patch
-patchlog release --bump minor
-patchlog release --bump major
+patchlog release direct --bump patch --dry-run
+patchlog release direct --bump minor --dry-run
+patchlog release direct --bump major --dry-run
 ```
 
 ### Auto-bump logic
@@ -738,9 +741,9 @@ changelog:
 ```
 
 ```bash
-patchlog release --changelog
+patchlog release direct --changelog --dry-run
 # Or combine with other flags
-patchlog release --bump auto --changelog
+patchlog release direct --bump auto --changelog --dry-run
 ```
 
 The accumulated markdown uses `###` headings (nested under `# Changelog`) with version sections separated by `---`.
@@ -780,6 +783,16 @@ confluence:
   api_token: $JIRA_API_TOKEN
   space_key: ENG
 ```
+
+Run the focused Confluence workflow:
+
+```bash
+patchlog confluence --dry-run
+patchlog confluence
+```
+
+Confluence accumulation cannot join `patchlog release`, including direct
+compatibility mode.
 
 ### Emoji headings
 
@@ -830,7 +843,7 @@ jira:
 
 ## Confluence Integration
 
-When `--confluence` is passed, patchlog publishes a rich page to Confluence Cloud:
+`patchlog confluence` publishes a rich page to Confluence Cloud:
 
 - **Create or update**: if a page with the same title exists, it's updated in-place (versioned). Otherwise a new page is created.
 - **Under a parent**: set `parent_page_id` to publish under a specific page tree.
@@ -1021,7 +1034,7 @@ Generates a single aggregated changelog from multiple repositories, with each re
 
 ## Metrics & Code Stats
 
-When `--metrics` is passed (markdown format only), patchlog appends a metrics section to the output:
+When `patchlog metrics` is used (markdown format only), patchlog appends a diagnostic metrics section to the output:
 
 ### Release metrics
 
@@ -1129,8 +1142,8 @@ patchlog provides real-time feedback with spinners, colors, and a summary table:
 ┌──────────────────────────────────────────────────┐
 │  ⚡ patchlog v0.5.0                              │
 │                                                  │
-│  auto-generate release notes                     │
-│  from git history                                │
+│  safe release coordination                       │
+│  from immutable plan to verified tag             │
 └──────────────────────────────────────────────────┘
 
   ✓ Fetching commits...

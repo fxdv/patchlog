@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ func createTestRepo(t *testing.T, commits []string) string {
 		}
 	}
 
-	run("git", "init")
+	run("git", "init", "-b", "main")
 	run("git", "config", "user.name", "test")
 	run("git", "config", "user.email", "test@test.com")
 
@@ -66,6 +67,35 @@ func createTestRepo(t *testing.T, commits []string) string {
 	run("git", "push", "-u", "origin", "HEAD", "--tags")
 
 	return dir
+}
+
+var planFingerprintPattern = regexp.MustCompile(`Plan fingerprint: (sha256:[a-f0-9]{64})`)
+
+func runApprovedCommand(t *testing.T, bin string, args ...string) string {
+	t.Helper()
+	fingerprint := planFingerprintForCommand(t, bin, args...)
+	applyArgs := append(append([]string(nil), args...), "--approve", fingerprint)
+	applyCmd := exec.Command(bin, applyArgs...)
+	applyOut, err := applyCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("approved release failed: %v\n%s", err, applyOut)
+	}
+	return string(applyOut)
+}
+
+func planFingerprintForCommand(t *testing.T, bin string, args ...string) string {
+	t.Helper()
+	planArgs := append(append([]string(nil), args...), "--dry-run")
+	planCmd := exec.Command(bin, planArgs...)
+	planOut, err := planCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("release planning failed: %v\n%s", err, planOut)
+	}
+	match := planFingerprintPattern.FindSubmatch(planOut)
+	if len(match) != 2 {
+		t.Fatalf("release plan did not report an approval fingerprint:\n%s", planOut)
+	}
+	return string(match[1])
 }
 
 func TestE2EBasicMarkdown(t *testing.T) {
@@ -146,9 +176,7 @@ func TestE2EBumpAuto(t *testing.T) {
 		"feat: add dashboard",
 	})
 
-	cmd := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--bump", "auto")
-	out, _ := cmd.CombinedOutput()
-	_ = string(out)
+	runApprovedCommand(t, bin, "release", "direct", "--repo", repo, "--from", "v0.1.0", "--bump", "auto")
 
 	versionFile := filepath.Join(repo, "VERSION")
 	data, err := os.ReadFile(versionFile)
@@ -167,9 +195,7 @@ func TestE2EBumpPatch(t *testing.T) {
 		"fix: resolve issue",
 	})
 
-	cmd := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--bump", "patch")
-	out, _ := cmd.CombinedOutput()
-	_ = string(out)
+	runApprovedCommand(t, bin, "release", "direct", "--repo", repo, "--from", "v0.1.0", "--bump", "patch")
 
 	data, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
 	v := strings.TrimSpace(string(data))

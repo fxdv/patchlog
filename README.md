@@ -1,23 +1,34 @@
 # Patchlog
 
-Patchlog is a safe release coordinator for Git repositories. It turns commit
-history into a deterministic release plan, validates every local and remote
-action before mutation, then transactionally bumps, tags, and atomically pushes.
+Patchlog is a safe release coordinator for protected Git repositories. It turns
+commit history into a fingerprinted release plan, prepares an isolated
+version-bump branch for review, then tags only the exact green commit merged to
+the protected branch.
 
-## Safe release in two commands
+## Safe protected release
 
 From a clean repository with a version file:
 
 ```bash
-# Immutable planning and preflight: no files, refs, caches, or remotes change.
+# Universal immutable plan. It prints an exact approval fingerprint.
 patchlog release --dry-run
 
-# Apply the same safe core workflow: auto-bump, annotated tag, atomic push.
-patchlog release
+# Apply only that approved plan: create, commit, and push release/vX.Y.Z.
+patchlog release prepare --approve sha256:<fingerprint>
 ```
 
-The default path does not call AI, publish a provider release, write a
-changelog, or contact Confluence. Add those extensions only when you need them.
+Open the pull request, require green CI, merge it, and wait for post-merge CI on
+the protected branch. Patchlog then detects the finalize phase:
+
+```bash
+patchlog release --dry-run
+patchlog release finalize --approve sha256:<fingerprint>
+```
+
+Finalize revalidates that local and remote protected-branch commits match,
+creates an annotated tag on that exact commit, and pushes only the immutable
+tag. The default path does not call AI, write analytics, contact Confluence, or
+combine optional extensions with the protected transaction.
 
 ## Install
 
@@ -30,10 +41,18 @@ patchlog --version
 
 Release archives and `SHA256SUMS` are published on the [GitHub releases page](https://github.com/fxdv/patchlog/releases). Archives also receive signed Sigstore provenance attestations, verifiable with `gh attestation verify <archive> --repo fxdv/patchlog`.
 
-Homebrew is the first planned package-manager channel, followed by Scoop.
-Checksum-pinned manifests are already produced by the release workflow, but the
-tap and bucket are not advertised as live until their external repositories and
-automated installation checks are operational.
+Homebrew is live and installation-tested automatically:
+
+```bash
+brew tap fxdv/tap
+brew install patchlog
+patchlog --version
+```
+
+The [fxdv/homebrew-tap](https://github.com/fxdv/homebrew-tap) synchronizes the
+checksum-pinned formula from stable Patchlog releases and installs/tests it
+before committing an update. The Patchlog release workflow independently tests
+the published formula on macOS. Scoop remains a planned second channel.
 
 ## Read-only notes
 
@@ -41,10 +60,18 @@ automated installation checks are operational.
 patchlog --from v0.1.0 --to HEAD
 ```
 
-Plain `patchlog` is reporting-only. Provider releases, changelogs, AI-assisted
-writing, Confluence analytics, metrics, and experimental labs are optional
-advanced workflows. Publishing remains strict: `--publish` requires an
-immutable, remotely verified tag.
+Plain `patchlog` is reporting-only. Optional capabilities use focused
+subcommands:
+
+```bash
+patchlog ai
+patchlog confluence
+patchlog metrics
+patchlog labs --gamify
+```
+
+Direct commit/tag/push remains available only as the explicit
+`patchlog release direct` compatibility workflow.
 
 ## Documentation
 
@@ -52,6 +79,8 @@ immutable, remotely verified tag.
 - [Configuration and security](docs/CONFIGURATION.md)
 - [Advanced workflows](docs/ADVANCED_WORKFLOWS.md)
 - [0.2.0 stability contract](docs/STABILITY.md)
+- [Product measurements](docs/PRODUCT_METRICS.md)
+- [Real-repository evidence](docs/evidence/README.md)
 - [Package-manager publishing](packaging/README.md)
 - [Complete CLI and feature reference](docs/REFERENCE.md)
 - [Security policy](SECURITY.md)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -66,9 +68,16 @@ const (
 func main() {
 	opts, args, err := parseCLI(os.Args[1:], os.Stderr)
 	if err != nil {
-		return
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
 	}
 	releaseMode := opts.releaseMode
+	releaseAction, approvePlan := opts.releaseAction, opts.approvePlan
+	requestedReleaseBranch := opts.releaseBranch
+	extensionMode := opts.extensionMode
 	from, to, cfgPath, repo := opts.from, opts.to, opts.cfgPath, opts.repo
 	outPath, format, filter, tone := opts.outPath, opts.format, opts.filter, opts.tone
 	bumpLevel, langFlag := opts.bumpLevel, opts.lang
@@ -86,7 +95,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: --push requires --tag\n")
 		os.Exit(2)
 	}
-	if tagFlag && bumpLevel == "" {
+	if tagFlag && bumpLevel == "" && releaseAction != "finalize" {
 		fmt.Fprintf(os.Stderr, "Error: --tag requires --bump\n")
 		os.Exit(2)
 	}
@@ -94,7 +103,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: --gamify is experimental and requires --labs\n")
 		os.Exit(2)
 	}
-	if !releaseMode && (bumpLevel != "" || tagFlag || pushFlag || forceFlag || publish || confluenceFlag || changelogFlag || trendsFlag) {
+	if !releaseMode && (bumpLevel != "" || tagFlag || pushFlag || forceFlag || publish || changelogFlag ||
+		(confluenceFlag && extensionMode != "confluence") || (trendsFlag && extensionMode != "confluence")) {
 		fmt.Fprintf(os.Stderr, "Error: release mutations require the focused 'patchlog release' subcommand\n")
 		os.Exit(2)
 	}
@@ -169,9 +179,23 @@ func main() {
 		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
-	if cfg.Changelog.Accumulate && !releaseMode {
-		fmt.Fprintln(os.Stderr, "Configuration error: changelog.accumulate requires the focused `patchlog release` subcommand.")
-		fmt.Fprintln(os.Stderr, "Next: run `patchlog release --dry-run`, or disable `changelog.accumulate` for read-only note generation.")
+	if extensionMode == "confluence" {
+		if err := preflightConfluence(cfg); err != nil {
+			writeReleasePlanError(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
+	focusedConfluenceChangelog := extensionMode == "confluence" &&
+		cfg.Changelog.Accumulate && changelogDestination(cfg) == "confluence"
+	if cfg.Changelog.Accumulate && !releaseMode && !focusedConfluenceChangelog {
+		fmt.Fprintln(os.Stderr, "Configuration error: changelog.accumulate requires a matching focused mutation subcommand.")
+		fmt.Fprintln(os.Stderr, "Next: use `patchlog confluence --dry-run` for a Confluence destination, `patchlog release direct --dry-run` for md/wiki, or disable `changelog.accumulate`.")
+		os.Exit(2)
+	}
+	if releaseMode && changelogDestination(cfg) == "confluence" &&
+		(changelogFlag || (releaseAction == "direct" && cfg.Changelog.Accumulate)) {
+		fmt.Fprintln(os.Stderr, "Configuration error: Confluence mutations require the focused `patchlog confluence` subcommand.")
+		fmt.Fprintln(os.Stderr, "Next: run `patchlog confluence --dry-run`, or choose the md/wiki changelog destination for direct compatibility mode.")
 		os.Exit(2)
 	}
 
@@ -200,6 +224,13 @@ func main() {
 	fetcher := &gitlog.Fetcher{RepoPath: repo, Filter: filter}
 
 	rangeFrom := resolveRange(ctx, fetcher, from, first)
+	if releaseMode && releaseAction != "direct" && from == "" && !first {
+		if stableTag, stableErr := fetcher.LatestStableTag(ctx, cfg.Release.TagPrefix); stableErr == nil {
+			rangeFrom = stableTag
+		} else {
+			rangeFrom = ""
+		}
+	}
 
 	if !quiet {
 		printBanner()
@@ -226,12 +257,15 @@ func main() {
 
 	// Initialize pipeline state for stage-based execution
 	state := &PipelineState{
-		Ctx:           ctx,
-		Cfg:           cfg,
-		Fetcher:       fetcher,
-		Repo:          repo,
-		Quiet:         quiet,
-		DryRun:        dryRun,
+		Ctx:     ctx,
+		Cfg:     cfg,
+		Fetcher: fetcher,
+		Repo:    repo,
+		Quiet:   quiet,
+		// Release planning and apply use the same local-only report pipeline.
+		// Optional external enrichment must run through a focused extension so
+		// an approved publication body cannot change between dry-run and apply.
+		DryRun:        dryRun || releaseMode,
 		Cache:         fileCache,
 		Tone:          toneVal,
 		RangeFrom:     rangeFrom,
@@ -249,7 +283,7 @@ func main() {
 	}
 
 	// Stage: AI commit type inference
-	if inferFlag || cfg.Infer.Enabled {
+	if extensionMode == "ai" && (inferFlag || cfg.Infer.Enabled) {
 		stageInfer(ctx, state)
 		parsedCommits = state.ParsedCommits
 		report = state.Report
@@ -303,7 +337,7 @@ func main() {
 
 	// Stage: semantic diff summaries
 	var semanticSummaries map[string]string
-	if semanticFlag || cfg.Semantic.Enabled {
+	if extensionMode == "ai" && (semanticFlag || cfg.Semantic.Enabled) {
 		state.Report = report
 		semanticSummaries = stageSemantic(ctx, state)
 	}
@@ -313,6 +347,40 @@ func main() {
 	if driftFlag || cfg.Drift.Enabled {
 		state.Report = report
 		driftReport = stageDrift(ctx, state)
+	}
+
+	var releasePhase ReleasePhase
+	var detectedVersion string
+	if releaseMode {
+		releasePhase, detectedVersion, _, err = resolveReleasePhase(ctx, releaseAction, dryRun, repo, cfg, fetcher)
+		if err != nil {
+			writeReleasePlanError(os.Stderr, err)
+			os.Exit(2)
+		}
+		switch releasePhase {
+		case ReleasePhasePrepare:
+			if bumpLevel == "" {
+				bumpLevel = "auto"
+			}
+			tagFlag = false
+			pushFlag = false
+		case ReleasePhaseFinalize:
+			bumpLevel = ""
+			tagFlag = true
+			pushFlag = true
+			report.Version = detectedVersion
+		case ReleasePhaseDirect:
+		default:
+			fmt.Fprintf(os.Stderr, "Error: unsupported release phase %q\n", releasePhase)
+			os.Exit(2)
+		}
+		if releasePhase != ReleasePhaseDirect && forceFlag {
+			writeReleasePlanError(os.Stderr, withHint(
+				fmt.Errorf("--force is unavailable in protected mode"),
+				"resolve the preflight rejection, or opt into the explicitly less-safe `patchlog release direct` workflow",
+			))
+			os.Exit(2)
+		}
 	}
 
 	var bumpLevelStr string
@@ -350,20 +418,31 @@ func main() {
 	var tagResult *gittag.Result
 	var tagName string
 	var tagOpts gittag.Options
-	if tagFlag && report.Version != "" {
-		prefix := ""
-		if prevTag, err := fetcher.LatestTag(ctx); err == nil {
+	if releaseMode && (tagFlag || releasePhase == ReleasePhasePrepare) && report.Version != "" {
+		prefix := cfg.Release.TagPrefix
+		if releasePhase == ReleasePhaseDirect {
+			if prevTag, err := fetcher.LatestTag(ctx); err == nil {
+				prefix = gittag.DetectPrefix(prevTag)
+			}
+		} else if prevTag, err := fetcher.LatestStableTag(ctx, cfg.Release.TagPrefix); err == nil {
 			prefix = gittag.DetectPrefix(prevTag)
 		}
 		tagName = prefix + report.Version
 
 		tagOpts = gittag.Options{
-			Tag:    true,
+			Tag:    tagFlag,
 			Push:   pushFlag,
 			Force:  forceFlag,
 			DryRun: dryRun,
 		}
 	}
+	protectedBranch := cfg.Release.ProtectedBranch
+	releaseBranch := requestedReleaseBranch
+	if releasePhase == ReleasePhasePrepare && releaseBranch == "" {
+		releaseBranch = cfg.Release.BranchPrefix + tagName
+	}
+	accumulateChangelog := releaseMode && releasePhase == ReleasePhaseDirect &&
+		(changelogFlag || cfg.Changelog.Accumulate)
 	var htmlFile string
 	if htmlFlag {
 		htmlFile = fmt.Sprintf("report-%s.html", strings.ReplaceAll(report.Version, "/", "_"))
@@ -386,7 +465,8 @@ func main() {
 	}
 
 	output, err = (DefaultReportOutputRenderer{}).Render(ctx, report, OutputRenderOptions{
-		Format: format, Tone: toneVal, Config: cfg, Quiet: quiet, DryRun: dryRun, Lang: langVal,
+		Format: format, Tone: toneVal, Config: cfg, Quiet: quiet,
+		DryRun: dryRun || extensionMode != "ai", Lang: langVal,
 	})
 	if format == "prose" && err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v (using fallback)\n", err)
@@ -406,7 +486,7 @@ func main() {
 	}
 
 	// Stage: AI theme grouping
-	if (themeFlag || cfg.Theme.Enabled) && format == "markdown" {
+	if extensionMode == "ai" && (themeFlag || cfg.Theme.Enabled) && format == "markdown" {
 		state.Report = report
 		tr, themedOutput := stageTheme(ctx, state, format, aiSummary)
 		if tr != nil {
@@ -490,22 +570,27 @@ func main() {
 	// must pass deterministic preflight before dry-run returns or Apply begins.
 	var releasePlan *ReleasePlan
 	var requestedTrendSnapshotPath string
-	if releaseMode && cfg.Trends.Store && report.Version != "" && report.Version != "Unreleased" {
+	if releaseMode && releasePhase == ReleasePhaseDirect && cfg.Trends.Store && report.Version != "" && report.Version != "Unreleased" {
 		requestedTrendSnapshotPath = filepath.Join(repo, ".patchlog", "trends", report.Version+".json")
 	}
 	if releaseMode {
 		releasePlan, err = NewReleasePlan(ctx, ReleasePlanRequest{
 			Repo:              repo,
+			Phase:             releasePhase,
 			Bump:              bumpPlan,
 			TagName:           tagName,
+			TargetVersion:     report.Version,
+			ProtectedBranch:   protectedBranch,
+			ReleaseBranch:     releaseBranch,
 			TagOptions:        tagOpts,
 			Publish:           publish,
 			Confluence:        confluenceFlag,
-			Changelog:         changelogFlag || cfg.Changelog.Accumulate,
+			Changelog:         accumulateChangelog,
 			Trends:            trendsFlag,
 			HTMLPath:          htmlFile,
 			OutputPath:        outPath,
 			TrendSnapshotPath: requestedTrendSnapshotPath,
+			RenderedOutput:    output,
 			Configuration:     cfg,
 		})
 		if err != nil {
@@ -517,32 +602,61 @@ func main() {
 
 	if dryRun {
 		displayDryRun(ctx, fetcher, rangeFrom, to, quiet)
-		if bumpPlan != nil && !quiet {
-			console.Step(fmt.Sprintf("[dry-run] Would bump %s → %s in: %s", bumpPlan.CurrentVersion, bumpPlan.NewVersion, strings.Join(bumpPlan.ChangedFiles(), ", ")))
-		}
-		if tagFlag && !quiet {
-			console.Step(fmt.Sprintf("[dry-run] Would commit only: %s", strings.Join(bumpPlan.ChangedFiles(), ", ")))
-			console.Step(fmt.Sprintf("[dry-run] Would create tag: %s", tagName))
-			if pushFlag {
-				console.Step("[dry-run] Would atomically push branch and tag")
+		if releaseMode {
+			switch releasePhase {
+			case ReleasePhasePrepare:
+				if !quiet {
+					console.Step(fmt.Sprintf("[dry-run] Would create release branch: %s from origin/%s", releaseBranch, protectedBranch))
+					console.Step(fmt.Sprintf("[dry-run] Would bump %s → %s in: %s", bumpPlan.CurrentVersion, bumpPlan.NewVersion, strings.Join(bumpPlan.ChangedFiles(), ", ")))
+					console.Step(fmt.Sprintf("[dry-run] Would commit only: %s", strings.Join(bumpPlan.ChangedFiles(), ", ")))
+					console.Step(fmt.Sprintf("[dry-run] Would push release branch: origin/%s", releaseBranch))
+				}
+			case ReleasePhaseFinalize:
+				if !quiet {
+					console.Step(fmt.Sprintf("[dry-run] Would tag exact origin/%s commit %s as %s", protectedBranch, releasePlan.head, tagName))
+					console.Step(fmt.Sprintf("[dry-run] Would push only immutable tag: %s", tagName))
+				}
+			case ReleasePhaseDirect:
+				if bumpPlan != nil && !quiet {
+					console.Step(fmt.Sprintf("[dry-run] Would bump %s → %s in: %s", bumpPlan.CurrentVersion, bumpPlan.NewVersion, strings.Join(bumpPlan.ChangedFiles(), ", ")))
+				}
+				if tagFlag && !quiet {
+					console.Step(fmt.Sprintf("[dry-run] Would commit only: %s", strings.Join(bumpPlan.ChangedFiles(), ", ")))
+					console.Step(fmt.Sprintf("[dry-run] Would create tag: %s", tagName))
+					if pushFlag {
+						console.Step("[dry-run] Would atomically push branch and tag")
+					}
+				}
+			}
+			if publish && !quiet {
+				console.Step("[dry-run] Would publish release draft to provider")
+			}
+			if confluenceFlag && !quiet {
+				console.Step("[dry-run] Would publish to Confluence")
+			}
+			if accumulateChangelog {
+				if !quiet {
+					console.Step("[dry-run] Would accumulate changelog")
+				}
+			}
+			if htmlFlag && !quiet {
+				console.Step("[dry-run] Would write an HTML report")
+			}
+			if trendSnapshotPath != "" && !quiet {
+				console.Step(fmt.Sprintf("[dry-run] Would write trend snapshot: %s", trendSnapshotPath))
+			}
+			fmt.Fprintf(os.Stderr, "Plan fingerprint: %s\n", releasePlan.Fingerprint())
+			switch releasePhase {
+			case ReleasePhasePrepare:
+				fmt.Fprintf(os.Stderr, "Next: %s\n", approvalCommand(releasePhase, releasePlan.Fingerprint()))
+			case ReleasePhaseFinalize:
+				fmt.Fprintf(os.Stderr, "Next: after required CI is green, run `%s`\n", approvalCommand(releasePhase, releasePlan.Fingerprint()))
+			case ReleasePhaseDirect:
+				fmt.Fprintf(os.Stderr, "Next: %s\n", approvalCommand(releasePhase, releasePlan.Fingerprint()))
 			}
 		}
-		if publish && !quiet {
-			console.Step("[dry-run] Would publish release draft to provider")
-		}
-		if confluenceFlag && !quiet {
-			console.Step("[dry-run] Would publish to Confluence")
-		}
-		if changelogFlag || cfg.Changelog.Accumulate {
-			if !quiet {
-				console.Step("[dry-run] Would accumulate changelog")
-			}
-		}
-		if htmlFlag && !quiet {
-			console.Step("[dry-run] Would write an HTML report")
-		}
-		if trendSnapshotPath != "" && !quiet {
-			console.Step(fmt.Sprintf("[dry-run] Would write trend snapshot: %s", trendSnapshotPath))
+		if extensionMode == "confluence" && !quiet {
+			console.Step("[dry-run] Would publish release notes to Confluence")
 		}
 		_, _ = os.Stdout.Write(output)
 		return
@@ -564,9 +678,41 @@ func main() {
 	}
 	coreResult := &CoreReleaseApplyResult{State: &ApplyState{}}
 	if releaseMode {
-		coreResult, err = ApplyCoreRelease(ctx, CoreReleaseApplyRequest{
-			Plan: releasePlan, PublishProvider: publishOperation,
-		})
+		if err := releasePlan.RequireApproval(approvePlan); err != nil {
+			writeReleasePlanError(os.Stderr, err)
+			os.Exit(2)
+		}
+		switch releasePhase {
+		case ReleasePhasePrepare:
+			tagResult, err = releasePlan.ApplyProtectedPrepare(ctx)
+			coreResult.Tag = tagResult
+			if err == nil {
+				coreResult.State.completed = append(coreResult.State.completed, "protected release prepare")
+			}
+		case ReleasePhaseFinalize:
+			tagResult, err = releasePlan.ApplyProtectedFinalize(ctx)
+			coreResult.Tag = tagResult
+			if err == nil {
+				coreResult.State.completed = append(coreResult.State.completed, "protected release finalize")
+			}
+			if err == nil && publishOperation != nil {
+				if verifyErr := releasePlan.VerifyRemoteRef(ctx); verifyErr != nil {
+					err = coreResult.State.Failure("immutable remote release ref verification", verifyErr)
+				} else if ref, ok := releasePlan.RemoteRef(); !ok {
+					err = coreResult.State.Failure("provider publish", fmt.Errorf("release plan has no remote ref"))
+				} else {
+					coreResult.PublishURL, err = publishOperation(ctx, ref)
+					if err != nil {
+						err = coreResult.State.Failure("provider publish", err)
+					}
+				}
+			}
+		case ReleasePhaseDirect:
+			coreResult, err = ApplyCoreRelease(ctx, CoreReleaseApplyRequest{
+				Plan: releasePlan, PublishProvider: publishOperation,
+			})
+			tagResult = coreResult.Tag
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error applying release plan: %v\n", err)
 			os.Exit(1)
@@ -578,7 +724,12 @@ func main() {
 	if bumpPlan != nil && !quiet {
 		console.Step(fmt.Sprintf("Bumped version → %s (%s)", bumpPlan.NewVersion, strings.Join(bumpPlan.ChangedFiles(), ", ")))
 	}
-	if tagResult != nil && !quiet {
+	if releasePhase == ReleasePhasePrepare && tagResult != nil && !quiet {
+		console.Step(fmt.Sprintf("Prepared release branch: %s (%s)", tagResult.Branch, tagResult.Commit))
+		console.Step("Next: open a pull request, require green quality CI, merge it, and wait for green post-merge CI")
+		console.Step("Then run: patchlog release --dry-run")
+	}
+	if tagResult != nil && tagResult.Tag != "" && !quiet {
 		if len(tagResult.Files) > 0 && tagResult.Commit != "" {
 			console.Step(fmt.Sprintf("Committed only planned files: %s (%s)", strings.Join(tagResult.Files, ", "), tagResult.Commit))
 		}
@@ -669,7 +820,7 @@ func main() {
 	}
 
 	var changelogURL string
-	if changelogFlag || cfg.Changelog.Accumulate {
+	if accumulateChangelog || focusedConfluenceChangelog {
 		if dryRun {
 			if !quiet {
 				console.Step("[dry-run] Would accumulate changelog")
@@ -831,9 +982,6 @@ func resolveRange(ctx context.Context, fetcher *gitlog.Fetcher, from string, fir
 }
 
 func displayDryRun(ctx context.Context, fetcher *gitlog.Fetcher, rangeFrom, to string, quiet bool) {
-	if !quiet {
-		printBanner()
-	}
 	commits, err := fetcher.FetchLog(ctx, rangeFrom, to)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching log: %v\n", err)
