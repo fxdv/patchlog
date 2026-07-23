@@ -28,8 +28,6 @@ import (
 	"github.com/fxdv/patchlog/pkg/trends"
 )
 
-var version = "dev"
-
 // Scoring formula constants
 const (
 	// Release risk score weights
@@ -146,7 +144,7 @@ func main() {
 	}
 
 	if showVer {
-		fmt.Printf("patchlog %s\n", version)
+		fmt.Printf("patchlog %s\n", currentVersion())
 		return
 	}
 
