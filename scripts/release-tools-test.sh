@@ -40,5 +40,20 @@ grep -F 'https://github.com/example/patchlog/releases/download/v9.8.7/' "${dist_
 python3 -m json.tool "${dist_dir}/patchlog.json" >/dev/null
 grep -F '"version": "9.8.7"' "${dist_dir}/patchlog.json"
 
+readonly_install_root="${test_root}/readonly-module-cache"
+mkdir -p "${readonly_install_root}/module"
+printf 'module cache\n' > "${readonly_install_root}/module/file.go"
+chmod -R a-w "${readonly_install_root}/module"
+RELEASE_TAG="v9.8.7" \
+  REPOSITORY="example/patchlog" \
+  GH_TOKEN="test-token" \
+  SOURCE_DIGEST="0123456789abcdef0123456789abcdef01234567" \
+  source scripts/verify-release.sh
+cleanup_install_root "${readonly_install_root}"
+if [ -e "${readonly_install_root}" ]; then
+  echo "read-only Go module cache cleanup failed" >&2
+  exit 1
+fi
+
 bash -n scripts/render-package-manifests.sh
 bash -n scripts/verify-release.sh

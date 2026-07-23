@@ -80,6 +80,15 @@ verify_attestation() {
   gh attestation verify "${arguments[@]}"
 }
 
+cleanup_install_root() {
+  local install_root="$1"
+  # Go deliberately stores downloaded modules read-only. Make only this
+  # mktemp-owned tree writable so cleanup cannot turn a successful install
+  # verification into a false failure.
+  chmod -R u+w "${install_root}" 2>/dev/null || true
+  rm -rf -- "${install_root}"
+}
+
 install_and_verify_module() {
   local selector="$1"
   local expected="$2"
@@ -95,22 +104,23 @@ install_and_verify_module() {
     GOPROXY="https://proxy.golang.org,direct" \
     GOSUMDB="sum.golang.org" \
     go install "github.com/fxdv/patchlog/cmd/patchlog@${selector}"; then
-    rm -rf "${install_root}"
+    cleanup_install_root "${install_root}"
     return 1
   fi
   if ! "${install_root}/bin/patchlog" --version | grep -Fx "patchlog ${expected}"; then
-    rm -rf "${install_root}"
+    cleanup_install_root "${install_root}"
     return 1
   fi
   if ! go version -m "${install_root}/bin/patchlog" |
     awk -v module="github.com/fxdv/patchlog" -v version="${expected}" \
       '$1 == "mod" && $2 == module && $3 == version { found = 1 } END { exit !found }'; then
-    rm -rf "${install_root}"
+    cleanup_install_root "${install_root}"
     return 1
   fi
-  rm -rf "${install_root}"
+  cleanup_install_root "${install_root}"
 }
 
+run_release_verification() {
 retry "published GitHub release" release_is_published
 
 verification_root="$(mktemp -d)"
@@ -156,3 +166,8 @@ if [ "${VERIFY_MODULE_INSTALLS}" = "true" ]; then
 fi
 
 echo "release ${RELEASE_TAG} passed archive, checksum, provenance, and installation verification"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  run_release_verification
+fi
