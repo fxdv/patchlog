@@ -193,6 +193,17 @@ func TestRunRefusesExistingTag(t *testing.T) {
 	}
 }
 
+func TestCreateTagRejectsOptionLikeTagName(t *testing.T) {
+	dir := initRepo(t)
+	m := &Manager{RepoPath: dir}
+	if err := m.CreateTag(context.Background(), "--force", "option-like tag"); err == nil || !strings.Contains(err.Error(), "option-like") {
+		t.Fatalf("option-like tag validation error = %v", err)
+	}
+	if exists, err := m.TagExists(context.Background(), "--force"); err != nil || exists {
+		t.Fatalf("option-like tag ref: exists=%v err=%v", exists, err)
+	}
+}
+
 func TestRunForceOverridesDirty(t *testing.T) {
 	dir := initRepo(t)
 	m := &Manager{RepoPath: dir}

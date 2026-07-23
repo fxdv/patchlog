@@ -6,19 +6,25 @@ contract rather than a claim of compatibility.
 
 ## Core CLI contract
 
-The supported golden path is:
+The supported universal planning entry point is:
 
 ```bash
 patchlog release --dry-run
-patchlog release
 ```
 
-With no explicit release-action flags, both commands select automatic version
-bumping, annotated tagging, and atomic branch/tag push. Dry-run is strictly
-immutable. Plain `patchlog` remains reporting-only.
+It auto-detects the protected lifecycle phase. `prepare` applies an approved
+fingerprint to an isolated version-bump branch and never tags. `finalize`
+applies a separately approved fingerprint only when the local and remote
+protected-branch commits match, then pushes only the annotated tag. Dry-run is
+strictly immutable. Plain `patchlog` remains reporting-only.
 
-Explicit release-action flags select a composed advanced workflow; Patchlog
-does not silently add publishing, Confluence, changelog, metrics, AI, or labs.
+Protected planning selects only reachable stable tags matching
+`tag_prefix + MAJOR.MINOR.PATCH`; nightly, deployment-marker, and prerelease
+tags cannot steer the stable release phase.
+
+Direct commit/tag/push requires the explicit `release direct` compatibility
+workflow. AI, Confluence, metrics, and labs use focused subcommands and cannot
+silently join the protected transaction.
 Exit-code meanings and documented core flags will remain compatible throughout
 the 0.2.x line.
 
@@ -34,11 +40,11 @@ provide a concrete recovery command.
 
 ## Deterministic plan/apply contract
 
-One immutable release plan owns every requested mutation. Planning and all
-gates complete before Apply. Apply revalidates repository state, bumps only the
-plan's exact file list transactionally, commits through an isolated index, and
-uses an immutable remote release ref. The same repository state and options
-must produce the same plan.
+One immutable release plan owns every requested mutation. Its SHA-256
+fingerprint covers phase, HEAD, branch identities, versions, tag, actions,
+exact file paths, modes, and before/after content hashes. Every mutation
+requires approval of the exact current fingerprint. Apply revalidates
+repository and remote state immediately before mutation.
 
 ## Release trust loop
 
@@ -64,10 +70,10 @@ claiming that an older tag is `@latest`.
 
 ## Distribution contract
 
-0.2.0 requires at least one package-manager installation channel with an
-automatically checksum-pinned manifest and an installation check in the trust
-loop. Homebrew is first; Scoop follows. Generated manifests in GitHub release
-assets are preparation, not a live channel by themselves.
+The live `fxdv/homebrew-tap` channel consumes an automatically checksum-pinned
+manifest. The tap installs and tests a candidate before updating, and the
+Patchlog release trust loop independently installs the published formula on
+macOS. Scoop follows as the next channel.
 
 ## Real-repository evidence
 
@@ -78,10 +84,14 @@ list, resulting tag target, CI result, and any recovery required. Do not include
 credentials or proprietary release content.
 
 Patchlog itself is the dogfood repository. Two additional repositories are
-still required before declaring this criterion complete.
+represented by local bare-remote compatibility validations, including one
+multi-manifest Python repository and one Rust/Python repository. Hosted
+PR/branch-protection/CI repetitions are still required before declaring this
+criterion complete. Evidence uses the schema in `docs/evidence` and feeds the
+product measurements defined in `docs/PRODUCT_METRICS.md`.
 
 ## Explicitly outside the stable core
 
 AI writing, metrics, Jira/Confluence analytics, DPI, health, gamification, and
-all `--labs` behavior are optional extensions. Experimental labs have no 0.2.x
+all `patchlog labs` behavior are optional extensions. Experimental labs have no 0.2.x
 compatibility promise and their proxies are never release gates.

@@ -101,7 +101,7 @@ func runTrends(args []string, defaultRepo string) {
 
 	if len(snapshots) == 0 {
 		fmt.Fprintln(os.Stderr, "No trend data found.")
-		fmt.Fprintln(os.Stderr, "Run a release with a version (e.g. patchlog release --bump auto) to start collecting snapshots.")
+		fmt.Fprintln(os.Stderr, "Run the explicit direct workflow with a version (e.g. patchlog release direct --bump auto --dry-run) to plan a diagnostic snapshot.")
 		os.Exit(0)
 	}
 

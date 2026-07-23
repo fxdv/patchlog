@@ -94,13 +94,15 @@ func (m *Manager) HasUnrelatedChanges(ctx context.Context, expected []string) (b
 }
 
 func (m *Manager) TagExists(ctx context.Context, tag string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "tag", "-l", tag)
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/tags/"+tag)
 	cmd.Dir = m.RepoPath
-	out, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("git tag -l: %w", err)
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect tag %s: %w", tag, err)
 	}
-	return strings.TrimSpace(string(out)) == tag, nil
+	return true, nil
 }
 
 func (m *Manager) CurrentBranch(ctx context.Context) (string, error) {
@@ -115,6 +117,93 @@ func (m *Manager) CurrentBranch(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("detached HEAD, checkout a branch before --push")
 	}
 	return branch, nil
+}
+
+func (m *Manager) LocalBranchExists(ctx context.Context, branch string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = m.RepoPath
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect local branch %s: %w", branch, err)
+	}
+	return true, nil
+}
+
+func (m *Manager) RemoteBranchCommit(ctx context.Context, branch string) (string, error) {
+	return m.remoteRefCommit(ctx, "refs/heads/"+branch)
+}
+
+func (m *Manager) RemoteTagCommit(ctx context.Context, tag string) (string, error) {
+	out, err := m.remoteRefs(ctx, "refs/tags/"+tag, "refs/tags/"+tag+"^{}")
+	if err != nil {
+		return "", err
+	}
+	var commit string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		commit = fields[0]
+		if strings.HasSuffix(fields[1], "^{}") {
+			return commit, nil
+		}
+	}
+	return commit, nil
+}
+
+func (m *Manager) remoteRefCommit(ctx context.Context, ref string) (string, error) {
+	out, err := m.remoteRefs(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) == 0 {
+		return "", nil
+	}
+	if len(fields) != 2 {
+		return "", fmt.Errorf("unexpected origin response for %s", ref)
+	}
+	return fields[0], nil
+}
+
+func (m *Manager) remoteRefs(ctx context.Context, refs ...string) (string, error) {
+	args := append([]string{"ls-remote", "origin"}, refs...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = m.RepoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("resolve origin refs %s: %w: %s", strings.Join(refs, ", "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func (m *Manager) CreateBranch(ctx context.Context, branch string) error {
+	return m.runGitWithEnv(ctx, os.Environ(), "switch", "-c", branch)
+}
+
+func (m *Manager) SwitchBranch(ctx context.Context, branch string) error {
+	return m.runGitWithEnv(ctx, os.Environ(), "switch", branch)
+}
+
+func (m *Manager) DeleteBranch(ctx context.Context, branch string) error {
+	return m.runGitWithEnv(ctx, os.Environ(), "branch", "-D", branch)
+}
+
+func (m *Manager) PushBranch(ctx context.Context, branch string) error {
+	if err := m.runGitWithEnv(ctx, os.Environ(), "push", "--set-upstream", "origin", branch); err != nil {
+		return fmt.Errorf("push prepared release branch %s: %w", branch, err)
+	}
+	return nil
+}
+
+func (m *Manager) PushTag(ctx context.Context, tag string) error {
+	if err := m.runGitWithEnv(ctx, os.Environ(), "push", "origin", "refs/tags/"+tag); err != nil {
+		return fmt.Errorf("push finalized release tag %s: %w", tag, err)
+	}
+	return nil
 }
 
 func (m *Manager) Stage(ctx context.Context, files []string) error {
@@ -235,6 +324,106 @@ func (m *Manager) ValidateRemote(ctx context.Context) error {
 	return nil
 }
 
+// ValidateProtectedPrepare proves that prepare starts from the exact remote
+// protected-branch commit and that its release branch is still unused.
+func (m *Manager) ValidateProtectedPrepare(ctx context.Context, protectedBranch, releaseBranch string) error {
+	if err := m.validateBranchName(ctx, protectedBranch); err != nil {
+		return fmt.Errorf("invalid protected branch: %w", err)
+	}
+	if err := m.validateBranchName(ctx, releaseBranch); err != nil {
+		return fmt.Errorf("invalid release branch: %w", err)
+	}
+	if err := m.ValidateRemote(ctx); err != nil {
+		return err
+	}
+	currentBranch, err := m.CurrentBranch(ctx)
+	if err != nil {
+		return err
+	}
+	if currentBranch != protectedBranch {
+		return fmt.Errorf("protected prepare must start on %s, current branch is %s", protectedBranch, currentBranch)
+	}
+	head, err := m.HeadCommit(ctx)
+	if err != nil {
+		return err
+	}
+	remoteHead, err := m.RemoteBranchCommit(ctx, protectedBranch)
+	if err != nil {
+		return err
+	}
+	if remoteHead == "" {
+		return fmt.Errorf("origin/%s does not exist", protectedBranch)
+	}
+	if remoteHead != head {
+		return fmt.Errorf("protected branch is not current: local %s is %s, origin/%s is %s", protectedBranch, head, protectedBranch, remoteHead)
+	}
+	if exists, err := m.LocalBranchExists(ctx, releaseBranch); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("local release branch %s already exists", releaseBranch)
+	}
+	remoteRelease, err := m.RemoteBranchCommit(ctx, releaseBranch)
+	if err != nil {
+		return err
+	}
+	if remoteRelease != "" {
+		return fmt.Errorf("origin release branch %s already exists at %s", releaseBranch, remoteRelease)
+	}
+	return nil
+}
+
+// ValidateProtectedFinalize proves that finalize tags only the exact remote
+// protected-branch commit and never a local-only or dirty checkout.
+func (m *Manager) ValidateProtectedFinalize(ctx context.Context, protectedBranch, tag string) error {
+	if err := m.validateBranchName(ctx, protectedBranch); err != nil {
+		return fmt.Errorf("invalid protected branch: %w", err)
+	}
+	if err := m.validateTagName(ctx, tag); err != nil {
+		return fmt.Errorf("invalid release tag: %w", err)
+	}
+	if err := m.ValidateRemote(ctx); err != nil {
+		return err
+	}
+	currentBranch, err := m.CurrentBranch(ctx)
+	if err != nil {
+		return err
+	}
+	if currentBranch != protectedBranch {
+		return fmt.Errorf("protected finalize must run on %s, current branch is %s", protectedBranch, currentBranch)
+	}
+	changes, err := m.WorktreeChanges(ctx)
+	if err != nil {
+		return err
+	}
+	if len(changes) > 0 {
+		return fmt.Errorf("protected finalize requires a clean worktree; found: %s", strings.Join(changes, ", "))
+	}
+	head, err := m.HeadCommit(ctx)
+	if err != nil {
+		return err
+	}
+	remoteHead, err := m.RemoteBranchCommit(ctx, protectedBranch)
+	if err != nil {
+		return err
+	}
+	if remoteHead != head {
+		return fmt.Errorf("green protected commit mismatch: local %s is %s, origin/%s is %s", protectedBranch, head, protectedBranch, remoteHead)
+	}
+	if exists, err := m.TagExists(ctx, tag); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("tag %s already exists locally", tag)
+	}
+	remoteTag, err := m.RemoteTagCommit(ctx, tag)
+	if err != nil {
+		return err
+	}
+	if remoteTag != "" {
+		return fmt.Errorf("tag %s already exists on origin at %s", tag, remoteTag)
+	}
+	return nil
+}
+
 // VerifyRemoteTag proves that the immutable remote tag resolves to the same
 // commit as the local tag before a provider release is created.
 func (m *Manager) VerifyRemoteTag(ctx context.Context, tag string) error {
@@ -276,11 +465,14 @@ func (m *Manager) CreateTag(ctx context.Context, tag, message string) error {
 }
 
 func (m *Manager) createTag(ctx context.Context, tag, message string, force bool) error {
+	if err := m.validateTagName(ctx, tag); err != nil {
+		return err
+	}
 	args := []string{"tag"}
 	if force {
 		args = append(args, "-f")
 	}
-	args = append(args, "-a", tag, "-m", message)
+	args = append(args, "-a", "-m", message, "--", tag)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = m.RepoPath
 	if err := cmd.Run(); err != nil {
@@ -317,6 +509,9 @@ func (m *Manager) ValidatePlan(ctx context.Context, version string, opts Options
 	if !opts.Tag {
 		return nil
 	}
+	if err := m.validateTagName(ctx, version); err != nil {
+		return fmt.Errorf("invalid release tag: %w", err)
+	}
 	files, err := m.WorktreeChanges(ctx)
 	if err != nil {
 		return err
@@ -336,6 +531,27 @@ func (m *Manager) ValidatePlan(ctx context.Context, version string, opts Options
 		if err := m.ValidateRemote(ctx); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (m *Manager) validateBranchName(ctx context.Context, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", branch)
+	cmd.Dir = m.RepoPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%q is not a valid branch name: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (m *Manager) validateTagName(ctx context.Context, tag string) error {
+	if strings.HasPrefix(tag, "-") {
+		return fmt.Errorf("%q is not a valid tag name: option-like names are rejected", tag)
+	}
+	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "refs/tags/"+tag)
+	cmd.Dir = m.RepoPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%q is not a valid tag name: %w: %s", tag, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

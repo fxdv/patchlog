@@ -8,6 +8,22 @@ The safe core release needs no integration configuration. Start with:
 patchlog release --dry-run
 ```
 
+## Protected release configuration
+
+Protected mode is the default:
+
+```yaml
+release:
+  protected_branch: main
+  branch_prefix: release/
+  tag_prefix: v
+```
+
+Prepare requires the local protected branch to match its remote before creating
+`branch_prefix + tag`. Finalize requires that match again before it can create
+and push the annotated tag. Use `patchlog release direct` only for repositories
+that deliberately choose direct commit/tag/push.
+
 If a configuration file cannot be decoded or validated, the diagnostic names
 its path and tells you to run `patchlog init` or fix the reported field before
 retrying the dry run.
@@ -24,8 +40,8 @@ provider:
 ```
 
 `provider.type`, `provider.repo`, and `provider.token` are preflighted before a
-publishing release can mutate version files. Provider configuration has no
-effect on the golden path unless `--publish` is explicitly selected.
+publishing release can mutate state. Provider configuration has no effect on
+protected prepare.
 
 ## AI disclosure and controls
 

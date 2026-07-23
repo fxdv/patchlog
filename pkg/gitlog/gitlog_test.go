@@ -158,6 +158,30 @@ func TestLatestTagNone(t *testing.T) {
 	}
 }
 
+func TestLatestStableTagIgnoresNightlyAndPrereleaseTags(t *testing.T) {
+	dir := initTestRepo(t)
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("tag", "v1.2.0")
+	run("tag", "v1.10.0")
+	run("tag", "v2.0.0-rc.1")
+	run("tag", "linux-nightly")
+
+	f := &Fetcher{RepoPath: dir}
+	tag, err := f.LatestStableTag(context.Background(), "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag != "v1.10.0" {
+		t.Fatalf("latest stable tag = %q, want v1.10.0", tag)
+	}
+}
+
 func TestChangedFiles(t *testing.T) {
 	dir := initTestRepo(t)
 	run := func(args ...string) {

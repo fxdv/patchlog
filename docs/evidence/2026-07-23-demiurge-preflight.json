@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "validation_scope": "external-source-preflight",
+  "source_repository": "fxdv/demiurge",
+  "production_remote_mutated": false,
+  "repository_class": "rust-virtual-workspace",
+  "patchlog_version": "development-protected-mode",
+  "patchlog_source_base": "30f9d17356949963accc2dc6cd7738f4b709e9dd",
+  "repository_commit": "f515793b6124178fb4548e3698b705b41ad30e5b",
+  "result": "rejected_without_mutation",
+  "preflight_rejections": ["version_detection"],
+  "finding": "The root Cargo.toml is a virtual workspace without a package version; workspace-member version coordination remains unsupported.",
+  "recovery_count": 0
+}

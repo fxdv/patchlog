@@ -25,7 +25,8 @@ class Patchlog < Formula
   end
 
   def install
-    bin.install Dir["patchlog_*/patchlog"].first => "patchlog"
+    # Homebrew strips the archive's single top-level directory before install.
+    bin.install "patchlog"
   end
 
   test do

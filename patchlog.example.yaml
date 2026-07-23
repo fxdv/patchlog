@@ -1,5 +1,12 @@
 repo: your-org/your-repo
 
+release:
+  # Protected mode separates the version-bump PR from green-commit tagging.
+  protected_branch: main
+  branch_prefix: release/
+  tag_prefix: v
+
+# Optional extension. The safe release core does not contact an AI provider.
 ai:
   provider: ollama
   model: llama3.2

@@ -194,3 +194,31 @@ jobs:
           VERIFY_SOURCE_IDENTITY: ${{ github.event_name == 'push' }}
           VERIFY_MODULE_INSTALLS: ${{ github.event_name == 'push' || inputs.verify_module_installs }}
         run: bash scripts/verify-release.sh
+
+  verify-homebrew:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - name: Install and test the published Homebrew formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          verification_root="$(mktemp -d)"
+          trap 'rm -rf "${verification_root}"' EXIT
+          gh release download "${RELEASE_TAG}" \
+            --repo "${REPOSITORY}" \
+            --pattern patchlog.rb \
+            --dir "${verification_root}"
+          ruby -c "${verification_root}/patchlog.rb"
+          brew tap-new patchlog/release-verification
+          tap_root="$(brew --repository patchlog/release-verification)"
+          cp "${verification_root}/patchlog.rb" "${tap_root}/Formula/patchlog.rb"
+          brew install patchlog/release-verification/patchlog
+          brew test patchlog/release-verification/patchlog

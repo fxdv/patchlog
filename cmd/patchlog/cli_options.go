@@ -7,50 +7,67 @@ import (
 )
 
 type cliOptions struct {
-	releaseMode bool
-	from        string
-	to          string
-	cfgPath     string
-	repo        string
-	outPath     string
-	format      string
-	first       bool
-	dryRun      bool
-	showVer     bool
-	filter      string
-	tone        string
-	classifyOn  bool
-	publish     bool
-	bumpLevel   string
-	review      bool
-	confluence  bool
-	changelog   bool
-	metrics     bool
-	aiEnhance   bool
-	quiet       bool
-	noCache     bool
-	theme       bool
-	tag         bool
-	push        bool
-	force       bool
-	trends      bool
-	lang        string
-	gate        bool
-	deps        bool
-	requireConv float64
-	infer       bool
-	semantic    bool
-	drift       bool
-	gamify      bool
-	html        bool
-	labs        bool
+	releaseMode   bool
+	releaseAction string
+	approvePlan   string
+	releaseBranch string
+	extensionMode string
+	from          string
+	to            string
+	cfgPath       string
+	repo          string
+	outPath       string
+	format        string
+	first         bool
+	dryRun        bool
+	showVer       bool
+	filter        string
+	tone          string
+	classifyOn    bool
+	publish       bool
+	bumpLevel     string
+	review        bool
+	confluence    bool
+	changelog     bool
+	metrics       bool
+	aiEnhance     bool
+	quiet         bool
+	noCache       bool
+	theme         bool
+	tag           bool
+	push          bool
+	force         bool
+	trends        bool
+	lang          string
+	gate          bool
+	deps          bool
+	requireConv   float64
+	infer         bool
+	semantic      bool
+	drift         bool
+	gamify        bool
+	html          bool
+	labs          bool
 }
 
 func parseCLI(args []string, stderr io.Writer) (cliOptions, []string, error) {
 	var opts cliOptions
-	if len(args) > 0 && args[0] == "release" {
-		opts.releaseMode = true
-		args = args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "release":
+			opts.releaseMode = true
+			args = args[1:]
+			if len(args) > 0 {
+				switch args[0] {
+				case "prepare", "finalize", "direct":
+					opts.releaseAction = args[0]
+					args = args[1:]
+				}
+			}
+		case "ai", "confluence", "metrics", "labs":
+			opts.extensionMode = args[0]
+			args = args[1:]
+		}
 	}
 	fs := flag.NewFlagSet("patchlog", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -62,6 +79,8 @@ func parseCLI(args []string, stderr io.Writer) (cliOptions, []string, error) {
 	fs.StringVar(&opts.format, "format", "markdown", "Output format: markdown, json, prose")
 	fs.BoolVar(&opts.first, "first", false, "Start from the very first commit")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "Plan and validate every requested action without modifying local or remote state")
+	fs.StringVar(&opts.approvePlan, "approve", "", "Approve one exact sha256 release-plan fingerprint before mutation")
+	fs.StringVar(&opts.releaseBranch, "release-branch", "", "Protected-mode prepare branch (default: release/<tag>)")
 	fs.BoolVar(&opts.showVer, "version", false, "Show version and exit")
 	fs.StringVar(&opts.filter, "filter", "", "Monorepo path filter (e.g. pkg/api)")
 	fs.StringVar(&opts.tone, "tone", "dev", "Output tone: dev, customer, exec")
@@ -94,8 +113,49 @@ func parseCLI(args []string, stderr io.Writer) (cliOptions, []string, error) {
 	if err := fs.Parse(args); err != nil {
 		return cliOptions{}, nil, err
 	}
+	if err := applyExtensionScope(&opts, fs); err != nil {
+		return cliOptions{}, nil, err
+	}
 	applySafeReleaseDefaults(&opts, fs)
 	return opts, fs.Args(), nil
+}
+
+func applyExtensionScope(opts *cliOptions, fs *flag.FlagSet) error {
+	used := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { used[f.Name] = true })
+	requiredScope := map[string]string{
+		"ai-enhance": "ai",
+		"infer":      "ai",
+		"semantic":   "ai",
+		"theme":      "ai",
+		"confluence": "confluence",
+		"trends":     "confluence",
+		"metrics":    "metrics",
+		"labs":       "labs",
+		"gamify":     "labs",
+	}
+	for name, scope := range requiredScope {
+		if used[name] && opts.extensionMode != scope {
+			return fmt.Errorf("--%s moved to `patchlog %s`; run `patchlog %s --help`", name, scope, scope)
+		}
+	}
+	switch opts.extensionMode {
+	case "":
+		return nil
+	case "ai":
+		if !used["ai-enhance"] && !used["infer"] && !used["semantic"] && !used["theme"] {
+			opts.aiEnhance = true
+		}
+	case "confluence":
+		opts.confluence = true
+	case "metrics":
+		opts.metrics = true
+	case "labs":
+		opts.labs = true
+	default:
+		return fmt.Errorf("unsupported extension subcommand %q", opts.extensionMode)
+	}
+	return nil
 }
 
 func applySafeReleaseDefaults(opts *cliOptions, fs *flag.FlagSet) {
@@ -110,20 +170,40 @@ func applySafeReleaseDefaults(opts *cliOptions, fs *flag.FlagSet) {
 		}
 	})
 	if explicitReleaseAction {
+		if opts.releaseAction == "" {
+			opts.releaseAction = "direct"
+		}
 		return
 	}
-	opts.bumpLevel = "auto"
-	opts.tag = true
-	opts.push = true
+	switch opts.releaseAction {
+	case "finalize":
+		opts.tag = true
+		opts.push = true
+	case "direct":
+		opts.bumpLevel = "auto"
+		opts.tag = true
+		opts.push = true
+	default:
+		opts.bumpLevel = "auto"
+	}
 }
 
 func printCLIUsage(fs *flag.FlagSet, out io.Writer) {
 	printBanner()
 	fmt.Fprintln(out, "\nUsage:")
 	fmt.Fprintln(out, "  patchlog [flags]           Generate release notes without mutations")
-	fmt.Fprintln(out, "  patchlog release [flags]   Safely bump, tag, and atomically push")
+	fmt.Fprintln(out, "  patchlog release --dry-run              Plan the next protected release phase")
+	fmt.Fprintln(out, "  patchlog release prepare --approve HASH Prepare and push a version-bump branch")
+	fmt.Fprintln(out, "  patchlog release finalize --approve HASH Tag the exact green protected-branch commit")
 	fmt.Fprintln(out, "\nSubcommands:")
-	fmt.Fprintln(out, "  patchlog release       Safe release; defaults to --bump auto --tag --push")
+	fmt.Fprintln(out, "  patchlog release          Universal immutable protected-release plan")
+	fmt.Fprintln(out, "  patchlog release prepare  Apply an approved version-bump branch plan")
+	fmt.Fprintln(out, "  patchlog release finalize Apply an approved green-commit tag plan")
+	fmt.Fprintln(out, "  patchlog release direct   Explicit legacy direct commit/tag/push mode")
+	fmt.Fprintln(out, "  patchlog ai               Optional AI-assisted release-note workflows")
+	fmt.Fprintln(out, "  patchlog confluence       Publish release notes to Confluence")
+	fmt.Fprintln(out, "  patchlog metrics          Diagnostic release metrics")
+	fmt.Fprintln(out, "  patchlog labs             Experimental DPI, health, and gamification")
 	fmt.Fprintln(out, "  patchlog init          Interactive setup wizard")
 	fmt.Fprintln(out, "  patchlog lint          Lint commits against conventional commit standards")
 	fmt.Fprintln(out, "  patchlog audit         Audit changelog against git history")
@@ -136,8 +216,10 @@ func printCLIUsage(fs *flag.FlagSet, out io.Writer) {
 	fmt.Fprintln(out, "\nFlags:")
 	fs.PrintDefaults()
 	fmt.Fprintln(out, "\nExamples:")
-	fmt.Fprintln(out, "  patchlog release --dry-run   Plan and preflight the safe default release")
-	fmt.Fprintln(out, "  patchlog release             Apply the reviewed default release")
+	fmt.Fprintln(out, "  patchlog release --dry-run")
+	fmt.Fprintln(out, "  patchlog release prepare --approve sha256:<fingerprint>")
+	fmt.Fprintln(out, "  patchlog release finalize --dry-run")
+	fmt.Fprintln(out, "  patchlog release finalize --approve sha256:<fingerprint>")
 	fmt.Fprintln(out, "  patchlog --from v1.0.0 --to v1.1.0")
-	fmt.Fprintln(out, "  patchlog release --bump minor --tag --push --publish")
+	fmt.Fprintln(out, "  patchlog release direct --bump minor --tag --push --publish --dry-run")
 }

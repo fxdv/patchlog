@@ -2,16 +2,22 @@
 
 Each stable release renders two checksum-pinned manifests:
 
-- `patchlog.rb`, ready to commit to the future `fxdv/homebrew-tap` repository.
+- `patchlog.rb`, consumed by the live `fxdv/homebrew-tap` repository.
 - `patchlog.json`, ready to commit to the future `fxdv/scoop-bucket` repository.
 
-The release workflow publishes these files as release assets and includes them
-in `SHA256SUMS`. This repository deliberately does not claim that either
-installation channel is live until the corresponding external repository and
-its update credentials exist.
+The release workflow publishes these files as release assets, includes them in
+`SHA256SUMS`, and installs/tests `patchlog.rb` on macOS. The external Homebrew
+tap checks for a new stable release hourly, validates the formula, installs and
+tests it, then commits the version update.
 
-Homebrew is the first planned channel. Scoop follows after the tap is operating
-and its installation verification is part of the release trust loop.
+Install through the live tap:
+
+```bash
+brew tap fxdv/tap
+brew install patchlog
+```
+
+Scoop follows as the next distribution channel.
 
 Publication follows the official repository layouts:
 

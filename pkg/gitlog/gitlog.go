@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -263,4 +264,23 @@ func (f *Fetcher) LatestTag(ctx context.Context) (string, error) {
 		return tags[0], nil
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// LatestStableTag returns the highest reachable tag matching the protected
+// release identity prefix + MAJOR.MINOR.PATCH. Nightly, prerelease, and
+// deployment-marker tags cannot accidentally steer version planning.
+func (f *Fetcher) LatestStableTag(ctx context.Context, prefix string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "tag", "--merged", "HEAD", "--list", "--sort=-version:refname")
+	cmd.Dir = f.RepoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("list stable release tags: %w", err)
+	}
+	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `[0-9]+\.[0-9]+\.[0-9]+$`)
+	for _, tag := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if pattern.MatchString(tag) {
+			return tag, nil
+		}
+	}
+	return "", fmt.Errorf("no stable release tags found with prefix %q", prefix)
 }

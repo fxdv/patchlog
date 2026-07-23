@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,14 @@ type RemoteReleaseRef struct {
 	tag string
 }
 
+type ReleasePhase string
+
+const (
+	ReleasePhaseDirect   ReleasePhase = "direct"
+	ReleasePhasePrepare  ReleasePhase = "prepare"
+	ReleasePhaseFinalize ReleasePhase = "finalize"
+)
+
 func newRemoteReleaseRef(tag string) (RemoteReleaseRef, error) {
 	tag = strings.TrimSpace(tag)
 	if tag == "" || strings.EqualFold(tag, "unreleased") || tag == "HEAD" {
@@ -36,8 +45,12 @@ func (r RemoteReleaseRef) Tag() string { return r.tag }
 
 type ReleasePlanRequest struct {
 	Repo              string
+	Phase             ReleasePhase
 	Bump              *bump.Plan
 	TagName           string
+	TargetVersion     string
+	ProtectedBranch   string
+	ReleaseBranch     string
 	TagOptions        gittag.Options
 	Publish           bool
 	Confluence        bool
@@ -46,6 +59,7 @@ type ReleasePlanRequest struct {
 	HTMLPath          string
 	OutputPath        string
 	TrendSnapshotPath string
+	RenderedOutput    []byte
 	Configuration     config.Config
 }
 
@@ -53,15 +67,24 @@ type ReleasePlanRequest struct {
 // mutation. All fields are private, mutable inputs are cloned, and construction
 // performs every deterministic local and remote preflight before Apply.
 type ReleasePlan struct {
-	repo              string
-	head              string
-	bump              *bump.Plan
-	tagName           string
-	tagOptions        gittag.Options
-	remoteRef         *RemoteReleaseRef
-	trendSnapshotPath string
-	actions           []string
-	manager           *gittag.Manager
+	repo               string
+	head               string
+	phase              ReleasePhase
+	bump               *bump.Plan
+	tagName            string
+	targetVersion      string
+	protectedBranch    string
+	releaseBranch      string
+	tagOptions         gittag.Options
+	remoteRef          *RemoteReleaseRef
+	trendSnapshotPath  string
+	renderedOutputHash string
+	publishTarget      string
+	confluenceTarget   string
+	mutationTargets    []string
+	actions            []string
+	fingerprint        string
+	manager            *gittag.Manager
 }
 
 func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, error) {
@@ -74,13 +97,30 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 	if err != nil {
 		return nil, err
 	}
+	phase := req.Phase
+	if phase == "" {
+		phase = ReleasePhaseDirect
+	}
 	plan := &ReleasePlan{
-		repo:       repo,
-		head:       head,
-		bump:       req.Bump.Clone(),
-		tagName:    req.TagName,
-		tagOptions: req.TagOptions,
-		manager:    manager,
+		repo:            repo,
+		head:            head,
+		phase:           phase,
+		bump:            req.Bump.Clone(),
+		tagName:         req.TagName,
+		targetVersion:   req.TargetVersion,
+		protectedBranch: req.ProtectedBranch,
+		releaseBranch:   req.ReleaseBranch,
+		tagOptions:      req.TagOptions,
+		manager:         manager,
+	}
+	if plan.targetVersion == "" && plan.bump != nil {
+		plan.targetVersion = plan.bump.NewVersion
+	}
+	if plan.tagName != "" && plan.targetVersion != "" {
+		tagVersion := strings.TrimPrefix(plan.tagName, gittag.DetectPrefix(plan.tagName))
+		if tagVersion != plan.targetVersion {
+			return nil, fmt.Errorf("release tag %s does not match target version %s", plan.tagName, plan.targetVersion)
+		}
 	}
 
 	if plan.bump != nil {
@@ -94,9 +134,54 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		if len(changes) > 0 && !req.TagOptions.Force {
 			return nil, fmt.Errorf("bump preflight requires a clean worktree; found: %s", strings.Join(changes, ", "))
 		}
-		plan.actions = append(plan.actions, "version bump")
 	}
-	if req.TagOptions.Tag {
+	switch plan.phase {
+	case ReleasePhasePrepare:
+		if req.Publish || req.Confluence || req.Changelog || req.Trends ||
+			req.HTMLPath != "" || req.OutputPath != "" || req.TrendSnapshotPath != "" {
+			return nil, fmt.Errorf("protected prepare contains only branch, version, and commit mutations; run optional publishing workflows separately")
+		}
+		if plan.bump == nil {
+			return nil, fmt.Errorf("protected prepare requires an exact version bump plan")
+		}
+		if plan.protectedBranch == "" || plan.releaseBranch == "" {
+			return nil, fmt.Errorf("protected prepare requires protected and release branch identities")
+		}
+		if err := manager.ValidateProtectedPrepare(ctx, plan.protectedBranch, plan.releaseBranch); err != nil {
+			return nil, fmt.Errorf("protected prepare preflight: %w", err)
+		}
+		plan.actions = append(plan.actions,
+			"create release branch",
+			"version bump",
+			"isolated release commit",
+			"push release branch",
+		)
+	case ReleasePhaseFinalize:
+		if req.Confluence || req.Changelog || req.Trends ||
+			req.HTMLPath != "" || req.OutputPath != "" || req.TrendSnapshotPath != "" {
+			return nil, fmt.Errorf("protected finalize contains only immutable tag and provider release operations; run optional extensions separately")
+		}
+		if plan.bump != nil {
+			return nil, fmt.Errorf("protected finalize cannot contain a version bump")
+		}
+		if plan.targetVersion == "" || plan.tagName == "" {
+			return nil, fmt.Errorf("protected finalize requires an exact version and tag")
+		}
+		if plan.protectedBranch == "" {
+			return nil, fmt.Errorf("protected finalize requires a protected branch identity")
+		}
+		if err := manager.ValidateProtectedFinalize(ctx, plan.protectedBranch, plan.tagName); err != nil {
+			return nil, fmt.Errorf("protected finalize preflight: %w", err)
+		}
+		plan.actions = append(plan.actions, "annotated tag", "push immutable tag")
+	case ReleasePhaseDirect:
+		if plan.bump != nil {
+			plan.actions = append(plan.actions, "version bump")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported release phase %q", plan.phase)
+	}
+	if plan.phase == ReleasePhaseDirect && req.TagOptions.Tag {
 		if plan.bump == nil {
 			return nil, fmt.Errorf("tagging requires an exact version bump plan")
 		}
@@ -109,6 +194,9 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		if !req.TagOptions.Tag || !req.TagOptions.Push {
 			return nil, fmt.Errorf("--publish requires --tag --push so the provider release is bound to an immutable remote tag")
 		}
+		if plan.phase == ReleasePhasePrepare {
+			return nil, fmt.Errorf("provider publishing belongs to protected finalize, not prepare")
+		}
 		ref, err := newRemoteReleaseRef(req.TagName)
 		if err != nil {
 			return nil, err
@@ -116,6 +204,17 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		if err := preflightProvider(req.Configuration); err != nil {
 			return nil, err
 		}
+		providerCfg := providerConfig(req.Configuration)
+		draft := true
+		if providerCfg.Draft != nil {
+			draft = *providerCfg.Draft
+		}
+		plan.publishTarget = strings.Join([]string{
+			string(providerCfg.Type),
+			providerCfg.BaseURL,
+			providerCfg.Repo,
+			fmt.Sprintf("draft=%t", draft),
+		}, "|")
 		plan.remoteRef = &ref
 		plan.actions = append(plan.actions, "provider publish")
 	}
@@ -125,12 +224,20 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		}
 	}
 	if req.Confluence {
+		confluenceCfg := resolveConfluenceConfig(req.Configuration)
+		plan.confluenceTarget = strings.Join([]string{
+			confluenceCfg.BaseURL,
+			confluenceCfg.SpaceKey,
+			confluenceCfg.ParentPageID,
+		}, "|")
+		plan.mutationTargets = append(plan.mutationTargets, "confluence:"+plan.confluenceTarget)
 		plan.actions = append(plan.actions, "Confluence publish")
 	}
 	if req.Changelog {
 		if err := preflightChangelog(repo, req.Configuration); err != nil {
 			return nil, err
 		}
+		plan.mutationTargets = append(plan.mutationTargets, "changelog:"+changelogTargetIdentity(repo, req.Configuration))
 		plan.actions = append(plan.actions, "changelog update")
 	}
 	if req.Trends {
@@ -152,6 +259,11 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		if err := preflightFileTarget(target.path); err != nil {
 			return nil, fmt.Errorf("%s preflight: %w", target.name, err)
 		}
+		absoluteTarget, err := filepath.Abs(target.path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s target: %w", target.name, err)
+		}
+		plan.mutationTargets = append(plan.mutationTargets, target.name+":"+absoluteTarget)
 		plan.actions = append(plan.actions, target.name+" write")
 	}
 	if req.TrendSnapshotPath != "" {
@@ -162,9 +274,51 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		if err != nil {
 			return nil, fmt.Errorf("resolve trend snapshot path: %w", err)
 		}
+		plan.mutationTargets = append(plan.mutationTargets, "trend snapshot:"+plan.trendSnapshotPath)
 		plan.actions = append(plan.actions, "trend snapshot write")
 	}
+	if req.Publish || req.Confluence || req.Changelog || req.OutputPath != "" {
+		plan.renderedOutputHash = sha256Digest(req.RenderedOutput)
+	}
+	plan.fingerprint, err = fingerprintReleasePlan(plan)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint release plan: %w", err)
+	}
 	return plan, nil
+}
+
+func (p *ReleasePlan) Phase() ReleasePhase {
+	if p == nil {
+		return ""
+	}
+	return p.phase
+}
+
+func (p *ReleasePlan) Fingerprint() string {
+	if p == nil {
+		return ""
+	}
+	return p.fingerprint
+}
+
+func (p *ReleasePlan) RequireApproval(approved string) error {
+	if p == nil {
+		return fmt.Errorf("release plan is nil")
+	}
+	approved = strings.TrimSpace(approved)
+	if approved == "" {
+		return withHint(
+			fmt.Errorf("release mutation requires approval of plan %s", p.fingerprint),
+			fmt.Sprintf("review `patchlog release --dry-run`, then rerun the indicated command with `--approve %s`", p.fingerprint),
+		)
+	}
+	if approved != p.fingerprint {
+		return withHint(
+			fmt.Errorf("approved plan %s does not match current plan %s", approved, p.fingerprint),
+			"repository or release inputs changed; rerun `patchlog release --dry-run` and approve the new fingerprint",
+		)
+	}
+	return nil
 }
 
 func (p *ReleasePlan) Actions() []string {
@@ -219,12 +373,77 @@ func (p *ReleasePlan) Revalidate(ctx context.Context) error {
 	if len(changes) > 0 && !p.tagOptions.Force {
 		return fmt.Errorf("repository changed after planning; found: %s", strings.Join(changes, ", "))
 	}
-	if p.tagOptions.Tag {
+	switch p.phase {
+	case ReleasePhasePrepare:
+		if err := p.manager.ValidateProtectedPrepare(ctx, p.protectedBranch, p.releaseBranch); err != nil {
+			return err
+		}
+	case ReleasePhaseFinalize:
+		if err := p.manager.ValidateProtectedFinalize(ctx, p.protectedBranch, p.tagName); err != nil {
+			return err
+		}
+	case ReleasePhaseDirect:
+		if !p.tagOptions.Tag {
+			return nil
+		}
 		if err := p.manager.ValidatePlan(ctx, p.tagName, p.tagOptions); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (p *ReleasePlan) ApplyProtectedPrepare(ctx context.Context) (*gittag.Result, error) {
+	if p == nil || p.phase != ReleasePhasePrepare || p.bump == nil {
+		return nil, fmt.Errorf("protected prepare requires a prepared release plan")
+	}
+	if err := p.Revalidate(ctx); err != nil {
+		return nil, fmt.Errorf("release plan changed before prepare: %w", err)
+	}
+	if err := p.manager.CreateBranch(ctx, p.releaseBranch); err != nil {
+		return nil, fmt.Errorf("create release branch %s: %w", p.releaseBranch, err)
+	}
+	cleanupBeforeCommit := func(cause error) error {
+		rollbackErr := p.bump.Rollback()
+		switchErr := p.manager.SwitchBranch(ctx, p.protectedBranch)
+		deleteErr := p.manager.DeleteBranch(ctx, p.releaseBranch)
+		return errors.Join(cause, rollbackErr, switchErr, deleteErr)
+	}
+	if err := p.bump.Apply(); err != nil {
+		_ = p.manager.SwitchBranch(ctx, p.protectedBranch)
+		_ = p.manager.DeleteBranch(ctx, p.releaseBranch)
+		return nil, fmt.Errorf("apply protected version bump: %w", err)
+	}
+	result := &gittag.Result{Files: p.bump.ChangedFiles(), Branch: p.releaseBranch}
+	message := fmt.Sprintf("chore(release): prepare v%s\n\nPatchlog-Plan: %s", p.targetVersion, p.fingerprint)
+	commit, err := p.manager.CommitFiles(ctx, message, p.bump.ChangedFiles())
+	if err != nil {
+		return result, fmt.Errorf("prepare release commit: %w", cleanupBeforeCommit(err))
+	}
+	result.Commit = commit
+	if err := p.manager.PushBranch(ctx, p.releaseBranch); err != nil {
+		return result, fmt.Errorf("release branch commit %s remains locally after push failure: %w", commit, err)
+	}
+	result.Pushed = true
+	return result, nil
+}
+
+func (p *ReleasePlan) ApplyProtectedFinalize(ctx context.Context) (*gittag.Result, error) {
+	if p == nil || p.phase != ReleasePhaseFinalize {
+		return nil, fmt.Errorf("protected finalize requires a finalize release plan")
+	}
+	if err := p.Revalidate(ctx); err != nil {
+		return nil, fmt.Errorf("release plan changed before finalize: %w", err)
+	}
+	result := &gittag.Result{Tag: p.tagName, Branch: p.protectedBranch}
+	if err := p.manager.CreateTag(ctx, p.tagName, fmt.Sprintf("Release %s", p.tagName)); err != nil {
+		return result, err
+	}
+	if err := p.manager.PushTag(ctx, p.tagName); err != nil {
+		return result, fmt.Errorf("local immutable tag %s remains after push failure: %w", p.tagName, err)
+	}
+	result.Pushed = true
+	return result, nil
 }
 
 func (p *ReleasePlan) ApplyBump() error {
@@ -344,6 +563,31 @@ func changelogDestination(cfg config.Config) string {
 		return "md"
 	}
 	return cfg.Changelog.Destination
+}
+
+func changelogTargetIdentity(repo string, cfg config.Config) string {
+	switch changelogDestination(cfg) {
+	case "md":
+		path := cfg.Changelog.File
+		if path == "" {
+			path = "CHANGELOG.md"
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(repo, path)
+		}
+		absolute, err := filepath.Abs(path)
+		if err == nil {
+			return absolute
+		}
+		return filepath.Clean(path)
+	case "wiki":
+		return strings.Join([]string{cfg.Provider.BaseURL, cfg.Provider.Repo, cfg.Changelog.Slug}, "|")
+	case "confluence":
+		confluenceCfg := resolveConfluenceConfig(cfg)
+		return strings.Join([]string{confluenceCfg.BaseURL, confluenceCfg.SpaceKey, cfg.Changelog.Title}, "|")
+	default:
+		return changelogDestination(cfg)
+	}
 }
 
 func preflightFileTarget(path string) error {

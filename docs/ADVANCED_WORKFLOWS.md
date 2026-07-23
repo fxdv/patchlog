@@ -5,16 +5,41 @@ Everything in this document extends the safe core. Start with
 AI, provider publishing, changelogs, Confluence analytics, metrics, and labs are
 not part of the default release.
 
-## Transactional provider release
+## Protected prepare and finalize
 
 ```bash
-patchlog release \
+patchlog release --dry-run
+patchlog release prepare --approve sha256:<prepare-fingerprint>
+
+# Open the PR, require green CI, merge, and wait for green protected-branch CI.
+patchlog release --dry-run
+patchlog release finalize --approve sha256:<finalize-fingerprint>
+```
+
+Prepare creates and pushes only the version-bump branch. Finalize requires the
+local protected branch to equal its remote, then creates and pushes only the
+annotated tag.
+
+## Explicit direct provider release
+
+```bash
+patchlog release direct \
   --bump auto \
   --review \
   --gate \
   --tag \
   --push \
-  --publish
+  --publish \
+  --dry-run
+
+patchlog release direct \
+  --bump auto \
+  --review \
+  --gate \
+  --tag \
+  --push \
+  --publish \
+  --approve sha256:<fingerprint>
 ```
 
 Execution order is fixed:
@@ -34,12 +59,21 @@ A later failure reports every operation already completed. Remote operations are
 ## Changelog and Confluence
 
 ```bash
-patchlog release --bump minor --tag --push --changelog
-patchlog release --confluence
-patchlog release --confluence --trends
+# md and GitLab wiki compatibility workflows
+patchlog release direct --bump minor --tag --push --changelog --dry-run
+
+# All Confluence mutations stay in the focused namespace
+patchlog confluence
+patchlog confluence --trends
+patchlog metrics
+patchlog ai --ai-enhance
+patchlog labs --gamify
 ```
 
-Destination-specific credentials and targets are validated during planning. `--trends` requires `--confluence`.
+Destination-specific credentials and targets are validated before mutation.
+When `changelog.destination: confluence` and accumulation is enabled,
+`patchlog confluence` updates the cumulative page. Confluence flags and
+destinations are rejected from release transactions.
 
 ## CI usage
 
@@ -57,7 +91,7 @@ are informational rather than a numeric release gate.
 
 ## Experimental labs
 
-`--labs` is an explicit experimental boundary. DPI, health signals, individual
+`patchlog labs` is an explicit experimental boundary. DPI, health signals, individual
 analytics, grades, percentiles, and gamification may change or disappear without
 the core compatibility guarantees.
 

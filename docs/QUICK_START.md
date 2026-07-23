@@ -27,41 +27,52 @@ These reporting commands do not perform release mutations.
 
 ## Prepare a release
 
-Run the complete safe default release as a two-step review/apply sequence:
+Run the universal protected-release planner:
 
 ```bash
 patchlog release --dry-run
 ```
 
-This plans an automatic semantic version bump, an isolated commit, an annotated
-tag, and an atomic branch/tag push. It performs the same deterministic preflight
-as Apply but does not write files, Git refs, caches, reports, changelogs, or
+This detects whether the repository needs `prepare` or `finalize`, performs
+every deterministic preflight, and prints a content-addressed approval
+fingerprint. It does not write files, Git refs, caches, reports, changelogs, or
 remote resources.
 
-After reviewing the plan:
+For prepare, approve the exact fingerprint:
 
 ```bash
-patchlog release
+patchlog release prepare --approve sha256:<fingerprint>
 ```
 
-The golden path needs:
+Patchlog creates `release/vX.Y.Z`, transactionally bumps only the exact planned
+files, commits through an isolated index, and pushes that branch without
+creating a tag. Open and merge its pull request only after required CI passes.
+After green post-merge CI:
+
+```bash
+patchlog release --dry-run
+patchlog release finalize --approve sha256:<fingerprint>
+```
+
+The protected path needs:
 
 - a clean worktree;
 - a discoverable version source such as `VERSION`;
 - an `origin` remote with the current branch configured;
+- a local protected branch matching its exact remote commit;
 - at least one releasable commit since the previous tag.
 
 When configuration or preflight fails, Patchlog names the missing fields and
 prints the exact recovery command. Fix the stated condition and rerun
 `patchlog release --dry-run`.
 
-The default path intentionally excludes provider publishing, changelog writes,
-AI, Confluence, metrics, and labs. To compose a custom workflow, provide its
-release flags explicitly. For example, a provider release requires:
+The default path intentionally excludes AI, Confluence, metrics, and labs.
+Those extensions have dedicated subcommands. Direct release coordination is an
+explicit compatibility mode:
 
 ```bash
-patchlog release --bump auto --tag --push --publish --dry-run
-patchlog release --bump auto --tag --push --publish
+patchlog release direct --bump auto --tag --push --publish --dry-run
+patchlog release direct --bump auto --tag --push --publish --approve sha256:<fingerprint>
 ```
 
 Publishing requires the atomic tag push so a release cannot point at an

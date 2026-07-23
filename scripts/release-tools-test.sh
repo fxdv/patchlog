@@ -37,6 +37,8 @@ if grep -R '@@' "${dist_dir}/patchlog.rb" "${dist_dir}/patchlog.json"; then
 fi
 grep -F 'version "9.8.7"' "${dist_dir}/patchlog.rb"
 grep -F 'https://github.com/example/patchlog/releases/download/v9.8.7/' "${dist_dir}/patchlog.rb"
+grep -F 'bin.install "patchlog"' "${dist_dir}/patchlog.rb"
+ruby -c "${dist_dir}/patchlog.rb"
 python3 -m json.tool "${dist_dir}/patchlog.json" >/dev/null
 grep -F '"version": "9.8.7"' "${dist_dir}/patchlog.json"
 

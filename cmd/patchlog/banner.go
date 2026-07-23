@@ -38,7 +38,21 @@ func printBanner() {
 
 	center := func(s string) string {
 		dw := displayWidth(s)
-		if dw >= w {
+		if dw > w {
+			var clipped strings.Builder
+			used := 0
+			for _, r := range s {
+				runeWidth := displayWidth(string(r))
+				if used+runeWidth+1 > w {
+					break
+				}
+				clipped.WriteRune(r)
+				used += runeWidth
+			}
+			s = clipped.String() + "…"
+			dw = used + 1
+		}
+		if dw == w {
 			return s
 		}
 		total := w - dw
@@ -52,8 +66,8 @@ func printBanner() {
 	b.WriteString("┌" + frame + "┐\n")
 	b.WriteString("│" + center("⚡ patchlog v"+stripV(currentVersion())) + "│\n")
 	b.WriteString("│" + center("") + "│\n")
-	b.WriteString("│" + center("auto-generate release notes") + "│\n")
-	b.WriteString("│" + center("from git history") + "│\n")
+	b.WriteString("│" + center("safe release coordination") + "│\n")
+	b.WriteString("│" + center("from immutable plan to verified tag") + "│\n")
 	b.WriteString("└" + frame + "┘\n")
 
 	fmt.Fprint(os.Stderr, b.String())
