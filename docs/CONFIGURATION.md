@@ -28,6 +28,29 @@ If a configuration file cannot be decoded or validated, the diagnostic names
 its path and tells you to run `patchlog init` or fix the reported field before
 retrying the dry run.
 
+### Rust virtual workspaces
+
+A root `Cargo.toml` containing `[workspace]` but no `[package].version` has no
+single package version for Patchlog to infer. Patchlog therefore rejects
+automatic bump planning before mutation; it does not guess which workspace
+members must remain version-aligned.
+
+For a workspace released under one repository version, add a root `VERSION`
+file containing the current semantic version and select it explicitly:
+
+```yaml
+bump:
+  auto_detect: false
+  files:
+    - VERSION
+```
+
+This makes `VERSION` the sole protected release source. Patchlog 0.2.x does not
+rewrite member `Cargo.toml` versions or dependency constraints. Repositories
+that require coordinated member-manifest updates must keep that coordination
+in their existing build tooling and run it before Patchlog planning, or remain
+on an explicitly documented custom release workflow.
+
 ## Optional provider configuration
 
 ```yaml

@@ -28,8 +28,10 @@ fingerprint stability, exact-file prepare, squash-merge handoff, annotated-tag
 finalize, and remote tag targeting without touching the source repository's
 production remote. They do not prove hosted branch protection or CI.
 
-Before 0.2.0, repeat both successful records against hosted test repositories
-or explicitly approved production repositories with required CI. Only records
-with `quality_result: success` count as full launch evidence. Preserve failed
-preflights as compatibility evidence instead of silently selecting an easier
+`hosted-protected-mirror` records repeat the lifecycle against public history
+mirrors with enforced pull requests, current required CI, conversation
+resolution, linear history, and force-push/deletion blocking. The two
+2026-07-24 records are the full hosted launch evidence; their production source
+repositories remained at the audited heads. Preserve failed preflights and
+mirror-infrastructure exceptions instead of silently selecting an easier
 repository.

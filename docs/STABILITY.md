@@ -84,11 +84,20 @@ list, resulting tag target, CI result, and any recovery required. Do not include
 credentials or proprietary release content.
 
 Patchlog itself is the dogfood repository. Two additional repositories are
-represented by local bare-remote compatibility validations, including one
-multi-manifest Python repository and one Rust/Python repository. Hosted
-PR/branch-protection/CI repetitions are still required before declaring this
-criterion complete. Evidence uses the schema in `docs/evidence` and feeds the
-product measurements defined in `docs/PRODUCT_METRICS.md`.
+represented by both local bare-remote compatibility validations and public
+hosted mirrors, including one multi-manifest Python repository and one
+Rust/Python repository. Both hosted repetitions used enforced pull requests,
+strict required CI, squash merging, separately green post-merge main commits,
+and annotated tags targeting those exact commits. The source repositories were
+not mutated. Evidence uses the schema in `docs/evidence` and feeds the product
+measurements defined in `docs/PRODUCT_METRICS.md`.
+
+Rust virtual workspaces with a root `[workspace]` table and no root
+`[package].version` are outside the 0.2.x automatic multi-member bump contract.
+Patchlog rejects that layout before mutation instead of guessing which members
+share a release. A repository may opt into a single language-neutral `VERSION`
+file as described in `CONFIGURATION.md`; coordinated workspace-member manifest
+updates remain a future, language-aware feature.
 
 ## Explicitly outside the stable core
 
