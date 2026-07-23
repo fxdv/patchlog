@@ -44,12 +44,12 @@ func runCurate(args []string, defaultRepo string) {
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
 	resolveEnvVars(&cfg)
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		writeConfigError(os.Stderr, cfgPath, err)
 		os.Exit(2)
 	}
 

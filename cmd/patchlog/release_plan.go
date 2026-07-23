@@ -35,31 +35,33 @@ func newRemoteReleaseRef(tag string) (RemoteReleaseRef, error) {
 func (r RemoteReleaseRef) Tag() string { return r.tag }
 
 type ReleasePlanRequest struct {
-	Repo          string
-	Bump          *bump.Plan
-	TagName       string
-	TagOptions    gittag.Options
-	Publish       bool
-	Confluence    bool
-	Changelog     bool
-	Trends        bool
-	HTMLPath      string
-	OutputPath    string
-	Configuration config.Config
+	Repo              string
+	Bump              *bump.Plan
+	TagName           string
+	TagOptions        gittag.Options
+	Publish           bool
+	Confluence        bool
+	Changelog         bool
+	Trends            bool
+	HTMLPath          string
+	OutputPath        string
+	TrendSnapshotPath string
+	Configuration     config.Config
 }
 
 // ReleasePlan is the single immutable description of every requested release
 // mutation. All fields are private, mutable inputs are cloned, and construction
 // performs every deterministic local and remote preflight before Apply.
 type ReleasePlan struct {
-	repo       string
-	head       string
-	bump       *bump.Plan
-	tagName    string
-	tagOptions gittag.Options
-	remoteRef  *RemoteReleaseRef
-	actions    []string
-	manager    *gittag.Manager
+	repo              string
+	head              string
+	bump              *bump.Plan
+	tagName           string
+	tagOptions        gittag.Options
+	remoteRef         *RemoteReleaseRef
+	trendSnapshotPath string
+	actions           []string
+	manager           *gittag.Manager
 }
 
 func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, error) {
@@ -152,6 +154,16 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		}
 		plan.actions = append(plan.actions, target.name+" write")
 	}
+	if req.TrendSnapshotPath != "" {
+		if err := preflightCreatableFileTarget(req.TrendSnapshotPath); err != nil {
+			return nil, fmt.Errorf("trend snapshot preflight: %w", err)
+		}
+		plan.trendSnapshotPath, err = filepath.Abs(req.TrendSnapshotPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve trend snapshot path: %w", err)
+		}
+		plan.actions = append(plan.actions, "trend snapshot write")
+	}
 	return plan, nil
 }
 
@@ -167,6 +179,13 @@ func (p *ReleasePlan) ChangedFiles() []string {
 		return nil
 	}
 	return p.bump.ChangedFiles()
+}
+
+func (p *ReleasePlan) TrendSnapshotPath() (string, bool) {
+	if p == nil || p.trendSnapshotPath == "" {
+		return "", false
+	}
+	return p.trendSnapshotPath, true
 }
 
 func (p *ReleasePlan) HasBump() bool { return p != nil && p.bump != nil }
@@ -231,23 +250,58 @@ func (p *ReleasePlan) VerifyRemoteRef(ctx context.Context) error {
 
 func preflightProvider(cfg config.Config) error {
 	providerCfg := providerConfig(cfg)
-	if providerCfg.Type == "" || providerCfg.Token == "" || providerCfg.Repo == "" {
-		return fmt.Errorf("publish preflight requires provider type, token, and repo")
+	var missing []string
+	if providerCfg.Type == "" {
+		missing = append(missing, "provider.type")
+	}
+	if providerCfg.Token == "" {
+		missing = append(missing, "provider.token")
+	}
+	if providerCfg.Repo == "" {
+		missing = append(missing, "provider.repo")
+	}
+	if len(missing) > 0 {
+		return withHint(
+			fmt.Errorf("publish preflight missing required configuration: %s", strings.Join(missing, ", ")),
+			"run `patchlog init`, configure the missing provider fields, then retry `patchlog release --dry-run`; or omit `--publish`",
+		)
 	}
 	if _, err := provider.New(providerCfg); err != nil {
-		return fmt.Errorf("provider preflight: %w", err)
+		return withHint(
+			fmt.Errorf("provider preflight: %w", err),
+			"fix the provider configuration and retry `patchlog release --dry-run`",
+		)
 	}
 	return nil
 }
 
 func preflightConfluence(cfg config.Config) error {
 	c := resolveConfluenceConfig(cfg)
+	var missing []string
+	if c.BaseURL == "" {
+		missing = append(missing, "confluence.base_url")
+	}
+	if c.APIToken == "" {
+		missing = append(missing, "confluence.api_token")
+	}
+	if c.SpaceKey == "" {
+		missing = append(missing, "confluence.space_key")
+	}
+	if len(missing) > 0 {
+		return withHint(
+			fmt.Errorf("Confluence preflight missing required configuration: %s", strings.Join(missing, ", ")),
+			"run `patchlog init`, configure the missing Confluence fields, then retry `patchlog release --dry-run`; or omit the Confluence option",
+		)
+	}
 	client := confluence.NewClient(confluence.Config{
 		BaseURL: c.BaseURL, Email: c.Email, APIToken: c.APIToken,
 		SpaceKey: c.SpaceKey, ParentPageID: c.ParentPageID,
 	})
 	if !client.Configured() {
-		return fmt.Errorf("Confluence preflight requires base_url, api_token, and space_key")
+		return withHint(
+			fmt.Errorf("Confluence configuration is incomplete"),
+			"run `patchlog init`, fix the Confluence configuration, then retry `patchlog release --dry-run`",
+		)
 	}
 	return nil
 }
@@ -265,11 +319,17 @@ func preflightChangelog(repo string, cfg config.Config) error {
 		return preflightFileTarget(path)
 	case "wiki":
 		if cfg.Provider.Type != "gitlab" {
-			return fmt.Errorf("wiki changelog preflight requires provider.type gitlab")
+			return withHint(
+				fmt.Errorf("wiki changelog preflight requires provider.type gitlab"),
+				"set `provider.type: gitlab` and retry `patchlog release --dry-run`; or choose another changelog destination",
+			)
 		}
 		client := gitwiki.NewClient(gitwiki.Config{Token: cfg.Provider.Token, Repo: cfg.Provider.Repo, BaseURL: cfg.Provider.BaseURL, Slug: cfg.Changelog.Slug})
 		if !client.Configured() {
-			return fmt.Errorf("wiki changelog preflight requires provider token and repo")
+			return withHint(
+				fmt.Errorf("wiki changelog preflight missing required configuration: provider.token, provider.repo"),
+				"run `patchlog init`, configure the GitLab provider, then retry `patchlog release --dry-run`",
+			)
 		}
 		return nil
 	case "confluence":
@@ -305,4 +365,38 @@ func preflightFileTarget(path string) error {
 		return fmt.Errorf("output parent %s is not a directory", parent)
 	}
 	return nil
+}
+
+func preflightCreatableFileTarget(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlink output target %s", abs)
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	parent := filepath.Dir(abs)
+	for {
+		info, err := os.Lstat(parent)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing symlink output directory %s", parent)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("output parent %s is not a directory", parent)
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return fmt.Errorf("no existing output ancestor for %s", abs)
+		}
+		parent = next
+	}
 }

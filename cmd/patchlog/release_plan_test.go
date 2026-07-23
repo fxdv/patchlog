@@ -127,3 +127,57 @@ func TestReleasePlanPreflightsConfluenceBeforeMutation(t *testing.T) {
 		t.Fatalf("VERSION mutated during failed preflight: %q", version)
 	}
 }
+
+func TestPreflightProviderReportsEveryMissingFieldAndRecovery(t *testing.T) {
+	err := preflightProvider(config.Config{})
+	if err == nil {
+		t.Fatal("expected provider preflight error")
+	}
+	for _, field := range []string{"provider.type", "provider.token", "provider.repo"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("error %q does not name %s", err, field)
+		}
+	}
+	if hint := errorHint(err); !strings.Contains(hint, "patchlog release --dry-run") {
+		t.Fatalf("hint = %q", hint)
+	}
+}
+
+func TestPreflightConfluenceReportsEveryMissingFieldAndRecovery(t *testing.T) {
+	err := preflightConfluence(config.Config{})
+	if err == nil {
+		t.Fatal("expected Confluence preflight error")
+	}
+	for _, field := range []string{"confluence.base_url", "confluence.api_token", "confluence.space_key"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("error %q does not name %s", err, field)
+		}
+	}
+	if hint := errorHint(err); !strings.Contains(hint, "patchlog release --dry-run") {
+		t.Fatalf("hint = %q", hint)
+	}
+}
+
+func TestReleasePlanIncludesOptInTrendSnapshotWrite(t *testing.T) {
+	repo := initReleasePlanRepo(t)
+	path := filepath.Join(repo, ".patchlog", "trends", "0.1.1.json")
+	plan, err := NewReleasePlan(context.Background(), ReleasePlanRequest{
+		Repo:              repo,
+		TrendSnapshotPath: path,
+		Configuration:     config.Default(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := plan.Actions()
+	if len(actions) != 1 || actions[0] != "trend snapshot write" {
+		t.Fatalf("actions = %v", actions)
+	}
+	plannedPath, ok := plan.TrendSnapshotPath()
+	if !ok || plannedPath != path {
+		t.Fatalf("planned trend snapshot path = %q, %v; want %q, true", plannedPath, ok, path)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".patchlog")); !os.IsNotExist(err) {
+		t.Fatalf("planning created analytics directory: %v", err)
+	}
+}

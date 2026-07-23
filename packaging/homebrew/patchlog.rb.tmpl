@@ -1,0 +1,34 @@
+class Patchlog < Formula
+  desc "Safely coordinate release notes, version bumps, tags, and pushes"
+  homepage "https://github.com/fxdv/patchlog"
+  version "@@VERSION@@"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "@@BASE_URL@@/@@DARWIN_ARM64_ARCHIVE@@"
+      sha256 "@@DARWIN_ARM64_SHA@@"
+    else
+      url "@@BASE_URL@@/@@DARWIN_AMD64_ARCHIVE@@"
+      sha256 "@@DARWIN_AMD64_SHA@@"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.arm?
+      url "@@BASE_URL@@/@@LINUX_ARM64_ARCHIVE@@"
+      sha256 "@@LINUX_ARM64_SHA@@"
+    else
+      url "@@BASE_URL@@/@@LINUX_AMD64_ARCHIVE@@"
+      sha256 "@@LINUX_AMD64_SHA@@"
+    end
+  end
+
+  def install
+    bin.install Dir["patchlog_*/patchlog"].first => "patchlog"
+  end
+
+  test do
+    assert_equal "patchlog v#{version}", shell_output("#{bin}/patchlog --version").strip
+  end
+end

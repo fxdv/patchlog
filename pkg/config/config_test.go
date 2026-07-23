@@ -18,6 +18,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Bump.AutoDetect != true {
 		t.Error("default Bump.AutoDetect should be true")
 	}
+	if cfg.Trends.Store {
+		t.Error("default Trends.Store should be false so the core release does not write analytics data")
+	}
 	if _, ok := cfg.Sections["feat"]; !ok {
 		t.Error("default sections missing feat")
 	}

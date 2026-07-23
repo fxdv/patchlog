@@ -1,5 +1,10 @@
 # Advanced workflows
 
+Everything in this document extends the safe core. Start with
+`patchlog release --dry-run`; add integrations only when their output is needed.
+AI, provider publishing, changelogs, Confluence analytics, metrics, and labs are
+not part of the default release.
+
 ## Transactional provider release
 
 ```bash
@@ -44,8 +49,26 @@ Use reporting mode for pull requests and reserve mutation mode for protected rel
 patchlog --from "$BASE_SHA" --to "$HEAD_SHA" --no-cache --out release-notes.md
 ```
 
-The repository workflows build immutable tag artifacts and publish `SHA256SUMS`. Required checks should protect the default branch; coverage artifacts are informational rather than a numeric release gate.
+The repository workflows build immutable tag artifacts, publish `SHA256SUMS`
+and provenance, then download and verify the public release. A normal stable
+release must also pass fresh `go install` checks for both its exact tag and
+`@latest`. Required checks should protect the default branch; coverage artifacts
+are informational rather than a numeric release gate.
 
 ## Experimental labs
 
-People analytics, individual grading, percentiles, and gamification remain explicitly experimental and require `--labs`. Descriptive proxies are not substitutes for CI coverage, language-aware dependency graphs, or PR/deployment timestamps and are not enforced by the release gate.
+`--labs` is an explicit experimental boundary. DPI, health signals, individual
+analytics, grades, percentiles, and gamification may change or disappear without
+the core compatibility guarantees.
+
+The descriptive proxies exposed by labs are diagnostic only:
+
+- `TOUCHED_TEST_FILE_RATIO`
+- `CHANGE_COMPLEXITY_PROXY`
+- `CROSS_CUTTING_CHANGE_RISK`
+- `RELEASE_CONTRIBUTION_CONCENTRATION`
+- `RELEASE_COMMIT_SPAN_HOURS`
+
+They are not release gates and are not presented as true coverage, dependency
+risk, bus factor, or lead/cycle time. Those require CI coverage artifacts,
+language-aware dependency graphs, and PR/deployment timestamps.
