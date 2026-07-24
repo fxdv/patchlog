@@ -1,6 +1,8 @@
 {
   "schema": 1,
   "validation_scope": "hosted-protected-repository",
+  "repository_controller_relationship": "unrelated-maintainer",
+  "maintainer_authorization_record": "<issue-or-pull-request-url>",
   "source_repository": "<owner/repository-or-redacted-class>",
   "production_remote_mutated": true,
   "repository_class": "go-single-module",
@@ -16,6 +18,11 @@
   "protected_branch": "main",
   "merged_commit": "<green-protected-branch-commit>",
   "quality_result": "success",
+  "commit_policy": {
+    "provider": "github",
+    "verified_commit": "<green-protected-branch-commit>",
+    "required_checks": ["quality"]
+  },
   "tag": "v0.2.0",
   "tag_target": "<green-protected-branch-commit>",
   "release_verification": "success",

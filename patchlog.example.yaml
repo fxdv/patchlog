@@ -35,6 +35,8 @@ gate:
 
 provider:
   type: github
+  # Protected finalize reads required branch checks for the exact release SHA.
+  # Private repositories need administration:read and checks:read.
   token: $GIT_PROVIDER_TOKEN
   repo: your-org/your-repo
   draft: true

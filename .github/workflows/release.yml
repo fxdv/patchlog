@@ -25,6 +25,7 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       tag_commit: ${{ steps.release.outputs.tag_commit }}
+      plan_fingerprint: ${{ steps.release.outputs.plan_fingerprint }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,8 +74,22 @@ jobs:
             exit 1
           fi
 
+          plan_fingerprint=""
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            plan_fingerprint="$(
+              git for-each-ref --format='%(contents)' "refs/tags/${release_tag}" |
+                sed -n 's/^Patchlog-Plan: //p' |
+                tail -n 1
+            )"
+            if [[ ! "${plan_fingerprint}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "release tag ${release_tag} is not bound to an approved Patchlog plan" >&2
+              exit 1
+            fi
+          fi
+
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "tag_commit=${tag_commit}" >> "${GITHUB_OUTPUT}"
+          echo "plan_fingerprint=${plan_fingerprint}" >> "${GITHUB_OUTPUT}"
       - name: Require an existing published release for recovery
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -125,6 +140,21 @@ jobs:
             cd dist
             sha256sum patchlog.rb patchlog.json >> SHA256SUMS
           )
+      - name: Render attestable release receipt
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_DIGEST: ${{ steps.release.outputs.tag_commit }}
+          PLAN_FINGERPRINT: ${{ steps.release.outputs.plan_fingerprint }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          bash scripts/render-release-receipt.sh
+          (
+            cd dist
+            sha256sum patchlog-release-receipt.json >> SHA256SUMS
+          )
       - name: Verify installation artifact and checksums
         if: github.event_name == 'push'
         env:
@@ -145,6 +175,11 @@ jobs:
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: 'dist/*.tar.gz'
+      - name: Attest the release receipt
+        if: github.event_name == 'push'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: 'dist/patchlog-release-receipt.json'
       - name: Publish GitHub release assets
         if: github.event_name == 'push'
         env:
@@ -162,6 +197,7 @@ jobs:
             "dist/SHA256SUMS"
             "dist/patchlog.rb"
             "dist/patchlog.json"
+            "dist/patchlog-release-receipt.json"
           )
           for asset in "${assets[@]}"; do
             if [ ! -f "${asset}" ]; then
@@ -193,6 +229,7 @@ jobs:
           SOURCE_DIGEST: ${{ needs.release.outputs.tag_commit }}
           VERIFY_SOURCE_IDENTITY: ${{ github.event_name == 'push' }}
           VERIFY_MODULE_INSTALLS: ${{ github.event_name == 'push' || inputs.verify_module_installs }}
+          VERIFY_RELEASE_RECEIPT: ${{ github.event_name == 'push' }}
         run: bash scripts/verify-release.sh
 
   verify-homebrew:
@@ -222,3 +259,53 @@ jobs:
           cp "${verification_root}/patchlog.rb" "${tap_root}/Formula/patchlog.rb"
           brew install patchlog/release-verification/patchlog
           brew test patchlog/release-verification/patchlog
+
+  verify-scoop:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pinned official Scoop installer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ScoopInstaller/Install
+          ref: b0ee913725139b816f9178163af0aecdba07a7ed
+          path: scoop-install
+      - name: Install and test the published Scoop manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          & "$env:GITHUB_WORKSPACE\scoop-install\install.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Scoop installer exited with $LASTEXITCODE"
+          }
+
+          $scoopRoot = Join-Path $env:USERPROFILE "scoop"
+          $scoopCore = Join-Path $scoopRoot "apps\scoop\current"
+          git -C $scoopCore fetch origin b588a06e41d920d2123ec70aee682bae14935939
+          git -C $scoopCore checkout --detach b588a06e41d920d2123ec70aee682bae14935939
+
+          $manifestRoot = Join-Path $env:RUNNER_TEMP "patchlog-scoop"
+          New-Item -ItemType Directory -Force -Path $manifestRoot | Out-Null
+          gh release download $env:RELEASE_TAG `
+            --repo $env:REPOSITORY `
+            --pattern patchlog.json `
+            --dir $manifestRoot
+
+          $scoop = Join-Path $scoopRoot "shims\scoop.ps1"
+          & $scoop install (Join-Path $manifestRoot "patchlog.json")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Scoop install exited with $LASTEXITCODE"
+          }
+          $patchlog = Join-Path $scoopRoot "shims\patchlog.exe"
+          $reported = (& $patchlog --version).Trim()
+          if ($reported -ne "patchlog $env:RELEASE_TAG") {
+            throw "Scoop package reported '$reported', expected 'patchlog $env:RELEASE_TAG'"
+          }

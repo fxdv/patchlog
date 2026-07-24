@@ -60,6 +60,8 @@ The protected path needs:
 - a discoverable version source such as `VERSION`;
 - an `origin` remote with the current branch configured;
 - a local protected branch matching its exact remote commit;
+- GitHub provider configuration able to read branch administration and checks
+  during finalize;
 - at least one releasable commit since the previous tag.
 
 When configuration or preflight fails, Patchlog names the missing fields and
@@ -77,6 +79,19 @@ patchlog release direct --bump auto --tag --push --publish --approve sha256:<fin
 
 Publishing requires the atomic tag push so a release cannot point at an
 implicit provider default branch.
+
+`patchlog release --bump patch` is rejected rather than silently selecting
+direct mode. Use `patchlog release prepare --bump patch --dry-run` for a
+protected manual override.
+
+For audit tooling, export the exact immutable plan without writing a file:
+
+```bash
+patchlog release --dry-run --plan-json --quiet > reviewed-plan.json
+```
+
+Shell redirection is controlled by the caller; Patchlog's dry-run process
+remains filesystem- and Git-immutable.
 
 ## Next steps
 

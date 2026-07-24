@@ -131,6 +131,9 @@ func newMockGitHubServer(t *testing.T) *httptest.Server {
 			w.WriteHeader(401)
 			return
 		}
+		if serveSuccessfulGitHubCommitPolicy(w, r) {
+			return
+		}
 		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/releases") {
 			var req map[string]any
 			json.NewDecoder(r.Body).Decode(&req)
@@ -144,6 +147,31 @@ func newMockGitHubServer(t *testing.T) *httptest.Server {
 		}
 		w.WriteHeader(404)
 	}))
+}
+
+func serveSuccessfulGitHubCommitPolicy(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/branches/main/protection/required_status_checks"):
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"contexts": []string{"quality"},
+			"checks":   []map[string]any{{"context": "quality", "app_id": 15368}},
+		})
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/rules/branches/main"):
+		_ = json.NewEncoder(w).Encode([]any{})
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/check-runs"):
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 1,
+			"check_runs": []map[string]any{{
+				"name": "quality", "status": "completed", "conclusion": "success",
+				"app": map[string]any{"id": 15368},
+			}},
+		})
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/status"):
+		_ = json.NewEncoder(w).Encode(map[string]any{"statuses": []any{}})
+	default:
+		return false
+	}
+	return true
 }
 
 func runPatchlog(t *testing.T, bin, repo string, extraArgs ...string) string {

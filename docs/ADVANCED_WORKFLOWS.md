@@ -17,8 +17,19 @@ patchlog release finalize --approve sha256:<finalize-fingerprint>
 ```
 
 Prepare creates and pushes only the version-bump branch. Finalize requires the
-local protected branch to equal its remote, then creates and pushes only the
-annotated tag.
+local protected branch to equal its remote and the exact SHA to satisfy every
+provider-required check. It verifies policy during planning, at apply, and
+immediately before pushing the annotated tag.
+
+Export a machine-readable plan for an approval or audit system:
+
+```bash
+patchlog release --dry-run --plan-json --quiet
+```
+
+The document uses the versioned
+[`release-plan/v1`](schemas/release-plan-v1.schema.json) contract; its
+fingerprint covers the stable commit-policy evidence.
 
 ## Explicit direct provider release
 
@@ -84,9 +95,10 @@ patchlog --from "$BASE_SHA" --to "$HEAD_SHA" --no-cache --out release-notes.md
 ```
 
 The repository workflows build immutable tag artifacts, publish `SHA256SUMS`
-and provenance, then download and verify the public release. A normal stable
-release must also pass fresh `go install` checks for both its exact tag and
-`@latest`. Required checks should protect the default branch; coverage artifacts
+and provenance, attest a versioned `patchlog-release-receipt.json`, then
+download and verify the public release. A normal stable release must also pass
+fresh `go install` checks for both its exact tag and `@latest`, Homebrew
+installation on macOS, and Scoop installation on Windows. Coverage artifacts
 are informational rather than a numeric release gate.
 
 ## Experimental labs

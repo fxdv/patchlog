@@ -359,23 +359,27 @@ never mutates without approval of the exact current fingerprint:
 
 ```bash
 patchlog release --dry-run
+patchlog release --dry-run --plan-json --quiet
 patchlog release prepare --approve sha256:<fingerprint>
 patchlog release finalize --approve sha256:<fingerprint>
 ```
 
 `prepare` creates and pushes a version-bump branch without a tag. `finalize`
-requires an exact local/remote protected-branch match and pushes only the
-annotated tag. Direct commit/tag/push requires `patchlog release direct`.
+requires an exact local/remote protected-branch match, proves required GitHub
+checks succeeded for that exact SHA, revalidates policy immediately before the
+push, and pushes only the annotated tag. Direct commit/tag/push requires
+`patchlog release direct`; no flag implicitly selects it.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--approve` | empty | Exact `sha256:` plan fingerprint required before mutation |
+| `--plan-json` | `false` | Emit the versioned immutable release-plan document to stdout; requires `--dry-run` |
 | `--release-branch` | `release/<tag>` | Protected prepare branch identity |
 | `--bump` | `auto` for prepare | Plan a `patch`, `minor`, `major`, or `auto` version bump |
 | `--tag` | direct mode only | Commit planned bump files and create an annotated tag |
 | `--push` | direct mode only | Atomically push the branch and tag (requires `--tag`) |
 | `--force` | `false` | Direct mode only: explicitly override dirty-tree or existing-tag safeguards |
-| `--publish` | `false` | Create a provider release after local Git operations succeed |
+| `--publish` | `false` | Finalize/direct only: create a provider release after immutable remote-tag verification |
 | `--changelog` | `false` | Accumulate the release into the configured changelog destination |
 
 AI, Confluence, metrics, and labs flags are accepted only by their dedicated

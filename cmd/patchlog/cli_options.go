@@ -12,6 +12,7 @@ type cliOptions struct {
 	approvePlan   string
 	releaseBranch string
 	extensionMode string
+	planJSON      bool
 	from          string
 	to            string
 	cfgPath       string
@@ -79,6 +80,7 @@ func parseCLI(args []string, stderr io.Writer) (cliOptions, []string, error) {
 	fs.StringVar(&opts.format, "format", "markdown", "Output format: markdown, json, prose")
 	fs.BoolVar(&opts.first, "first", false, "Start from the very first commit")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "Plan and validate every requested action without modifying local or remote state")
+	fs.BoolVar(&opts.planJSON, "plan-json", false, "Write the versioned protected release plan JSON to stdout (requires release --dry-run)")
 	fs.StringVar(&opts.approvePlan, "approve", "", "Approve one exact sha256 release-plan fingerprint before mutation")
 	fs.StringVar(&opts.releaseBranch, "release-branch", "", "Protected-mode prepare branch (default: release/<tag>)")
 	fs.BoolVar(&opts.showVer, "version", false, "Show version and exit")
@@ -116,7 +118,9 @@ func parseCLI(args []string, stderr io.Writer) (cliOptions, []string, error) {
 	if err := applyExtensionScope(&opts, fs); err != nil {
 		return cliOptions{}, nil, err
 	}
-	applySafeReleaseDefaults(&opts, fs)
+	if err := applySafeReleaseDefaults(&opts, fs); err != nil {
+		return cliOptions{}, nil, err
+	}
 	return opts, fs.Args(), nil
 }
 
@@ -158,68 +162,63 @@ func applyExtensionScope(opts *cliOptions, fs *flag.FlagSet) error {
 	return nil
 }
 
-func applySafeReleaseDefaults(opts *cliOptions, fs *flag.FlagSet) {
+func applySafeReleaseDefaults(opts *cliOptions, fs *flag.FlagSet) error {
 	if opts == nil || !opts.releaseMode {
-		return
+		if opts != nil && opts.planJSON {
+			return fmt.Errorf("--plan-json requires `patchlog release --dry-run`")
+		}
+		return nil
 	}
-	explicitReleaseAction := false
+	used := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "bump", "tag", "push", "publish", "confluence", "changelog", "trends":
-			explicitReleaseAction = true
-		}
+		used[f.Name] = true
 	})
-	if explicitReleaseAction {
-		if opts.releaseAction == "" {
-			opts.releaseAction = "direct"
-		}
-		return
+	if opts.planJSON && !opts.dryRun {
+		return fmt.Errorf("--plan-json is side-effect-free output and requires --dry-run")
 	}
+	if opts.planJSON && opts.releaseAction == "direct" {
+		return fmt.Errorf("--plan-json exports the protected release contract and is unavailable in `patchlog release direct` compatibility mode")
+	}
+
+	directOnly := []string{"tag", "push", "force", "changelog"}
+	for _, name := range directOnly {
+		if used[name] && opts.releaseAction != "direct" {
+			return fmt.Errorf("--%s is available only through explicit compatibility mode; run `patchlog release direct --%s ...`", name, name)
+		}
+	}
+
 	switch opts.releaseAction {
+	case "":
+		if used["bump"] {
+			return fmt.Errorf("manual protected bumps require an explicit prepare phase; run `patchlog release prepare --bump %s --dry-run`", opts.bumpLevel)
+		}
+		if used["publish"] {
+			return fmt.Errorf("--publish requires an explicit finalize phase; run `patchlog release finalize --publish --dry-run`")
+		}
+		opts.bumpLevel = "auto"
+	case "prepare":
+		if used["publish"] {
+			return fmt.Errorf("--publish belongs to protected finalize; run `patchlog release finalize --publish --dry-run` after the release PR is merged")
+		}
+		if opts.bumpLevel == "" {
+			opts.bumpLevel = "auto"
+		}
 	case "finalize":
+		if used["bump"] {
+			return fmt.Errorf("--bump belongs to protected prepare; run `patchlog release prepare --bump %s --dry-run`", opts.bumpLevel)
+		}
 		opts.tag = true
 		opts.push = true
 	case "direct":
-		opts.bumpLevel = "auto"
-		opts.tag = true
-		opts.push = true
-	default:
-		opts.bumpLevel = "auto"
+		if opts.bumpLevel == "" {
+			opts.bumpLevel = "auto"
+		}
+		if !used["tag"] {
+			opts.tag = true
+		}
+		if !used["push"] {
+			opts.push = true
+		}
 	}
-}
-
-func printCLIUsage(fs *flag.FlagSet, out io.Writer) {
-	printBanner()
-	fmt.Fprintln(out, "\nUsage:")
-	fmt.Fprintln(out, "  patchlog [flags]           Generate release notes without mutations")
-	fmt.Fprintln(out, "  patchlog release --dry-run              Plan the next protected release phase")
-	fmt.Fprintln(out, "  patchlog release prepare --approve HASH Prepare and push a version-bump branch")
-	fmt.Fprintln(out, "  patchlog release finalize --approve HASH Tag the exact green protected-branch commit")
-	fmt.Fprintln(out, "\nSubcommands:")
-	fmt.Fprintln(out, "  patchlog release          Universal immutable protected-release plan")
-	fmt.Fprintln(out, "  patchlog release prepare  Apply an approved version-bump branch plan")
-	fmt.Fprintln(out, "  patchlog release finalize Apply an approved green-commit tag plan")
-	fmt.Fprintln(out, "  patchlog release direct   Explicit legacy direct commit/tag/push mode")
-	fmt.Fprintln(out, "  patchlog ai               Optional AI-assisted release-note workflows")
-	fmt.Fprintln(out, "  patchlog confluence       Publish release notes to Confluence")
-	fmt.Fprintln(out, "  patchlog metrics          Diagnostic release metrics")
-	fmt.Fprintln(out, "  patchlog labs             Experimental DPI, health, and gamification")
-	fmt.Fprintln(out, "  patchlog init          Interactive setup wizard")
-	fmt.Fprintln(out, "  patchlog lint          Lint commits against conventional commit standards")
-	fmt.Fprintln(out, "  patchlog audit         Audit changelog against git history")
-	fmt.Fprintln(out, "  patchlog multi <repos> Aggregate changelogs from multiple repos")
-	fmt.Fprintln(out, "  patchlog recover <file> Re-render markdown from saved JSON")
-	fmt.Fprintln(out, "  patchlog cache clear   Clear the file cache")
-	fmt.Fprintln(out, "  patchlog trends        Show cross-release trend analysis")
-	fmt.Fprintln(out, "  patchlog curate        Interactive TUI curator for release notes")
-	fmt.Fprintln(out, "  patchlog postmortem    Analyze post-release stability (rollbacks, hotfixes)")
-	fmt.Fprintln(out, "\nFlags:")
-	fs.PrintDefaults()
-	fmt.Fprintln(out, "\nExamples:")
-	fmt.Fprintln(out, "  patchlog release --dry-run")
-	fmt.Fprintln(out, "  patchlog release prepare --approve sha256:<fingerprint>")
-	fmt.Fprintln(out, "  patchlog release finalize --dry-run")
-	fmt.Fprintln(out, "  patchlog release finalize --approve sha256:<fingerprint>")
-	fmt.Fprintln(out, "  patchlog --from v1.0.0 --to v1.1.0")
-	fmt.Fprintln(out, "  patchlog release direct --bump minor --tag --push --publish --dry-run")
+	return nil
 }

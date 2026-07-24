@@ -1,0 +1,40 @@
+{
+  "all_validation_attempts": 5,
+  "collection": {
+    "individual_or_proxy_metrics_used_as_release_gates": false,
+    "telemetry_sent_by_patchlog": false
+  },
+  "evidence_class": "hosted-protected-workflows",
+  "hosted_sample_size": 2,
+  "plan_to_release_success_rate": {
+    "denominator": 2,
+    "numerator": 2,
+    "percentage": 100.0
+  },
+  "preflight_rejection_observation_sample_size": 5,
+  "preflight_rejection_reasons": {
+    "version_detection": 1
+  },
+  "recovery_execution_count": 0,
+  "recovery_rate": {
+    "denominator": 2,
+    "numerator": 0,
+    "percentage": 0.0
+  },
+  "releases_without_manual_git_intervention": {
+    "denominator": 2,
+    "numerator": 1,
+    "percentage": 50.0
+  },
+  "schema": "https://patchlog.dev/schemas/product-metrics/v1",
+  "schema_version": 1,
+  "time_to_first_successful_plan_seconds": {
+    "median": 322.5,
+    "p90_nearest_rank": 335
+  },
+  "unrelated_maintainer_validation": {
+    "completed_repositories": 0,
+    "launch_gate_satisfied": false,
+    "required_repositories": 3
+  }
+}

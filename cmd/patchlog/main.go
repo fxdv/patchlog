@@ -77,6 +77,7 @@ func main() {
 	releaseMode := opts.releaseMode
 	releaseAction, approvePlan := opts.releaseAction, opts.approvePlan
 	requestedReleaseBranch := opts.releaseBranch
+	planJSON := opts.planJSON
 	extensionMode := opts.extensionMode
 	from, to, cfgPath, repo := opts.from, opts.to, opts.cfgPath, opts.repo
 	outPath, format, filter, tone := opts.outPath, opts.format, opts.filter, opts.tone
@@ -91,66 +92,12 @@ func main() {
 	inferFlag, semanticFlag, driftFlag := opts.infer, opts.semantic, opts.drift
 	gamifyFlag, htmlFlag, labsFlag := opts.gamify, opts.html, opts.labs
 
-	if pushFlag && !tagFlag {
-		fmt.Fprintf(os.Stderr, "Error: --push requires --tag\n")
+	if err := validateCLIContract(opts, args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(2)
 	}
-	if tagFlag && bumpLevel == "" && releaseAction != "finalize" {
-		fmt.Fprintf(os.Stderr, "Error: --tag requires --bump\n")
-		os.Exit(2)
-	}
-	if gamifyFlag && !labsFlag {
-		fmt.Fprintf(os.Stderr, "Error: --gamify is experimental and requires --labs\n")
-		os.Exit(2)
-	}
-	if !releaseMode && (bumpLevel != "" || tagFlag || pushFlag || forceFlag || publish || changelogFlag ||
-		(confluenceFlag && extensionMode != "confluence") || (trendsFlag && extensionMode != "confluence")) {
-		fmt.Fprintf(os.Stderr, "Error: release mutations require the focused 'patchlog release' subcommand\n")
-		os.Exit(2)
-	}
-
-	if releaseMode && len(args) > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unexpected release argument %q\n", args[0])
-		os.Exit(2)
-	}
-	if len(args) > 0 {
-		switch args[0] {
-		case "init":
-			cmdInit()
-			return
-		case "lint":
-			runLint(args[1:])
-			return
-		case "audit":
-			runAudit(args[1:])
-			return
-		case "multi":
-			runMultiRepo(args[1:])
-			return
-		case "recover":
-			if len(args) < 2 {
-				fmt.Fprintf(os.Stderr, "Usage: patchlog recover <json-file>\n")
-				os.Exit(2)
-			}
-			cmdRecover(args[1])
-			return
-		case "cache":
-			if len(args) < 2 || args[1] != "clear" {
-				fmt.Fprintf(os.Stderr, "Usage: patchlog cache clear\n")
-				os.Exit(2)
-			}
-			cmdCacheClear(repo)
-			return
-		case "trends":
-			runTrends(args[1:], repo)
-			return
-		case "curate":
-			runCurate(args[1:], repo)
-			return
-		case "postmortem":
-			runPostmortem(args[1:], repo)
-			return
-		}
+	if dispatchAdvancedCommand(args, repo) {
+		return
 	}
 
 	if showVer {
@@ -603,62 +550,39 @@ func main() {
 	if dryRun {
 		displayDryRun(ctx, fetcher, rangeFrom, to, quiet)
 		if releaseMode {
-			switch releasePhase {
-			case ReleasePhasePrepare:
-				if !quiet {
-					console.Step(fmt.Sprintf("[dry-run] Would create release branch: %s from origin/%s", releaseBranch, protectedBranch))
-					console.Step(fmt.Sprintf("[dry-run] Would bump %s → %s in: %s", bumpPlan.CurrentVersion, bumpPlan.NewVersion, strings.Join(bumpPlan.ChangedFiles(), ", ")))
-					console.Step(fmt.Sprintf("[dry-run] Would commit only: %s", strings.Join(bumpPlan.ChangedFiles(), ", ")))
-					console.Step(fmt.Sprintf("[dry-run] Would push release branch: origin/%s", releaseBranch))
-				}
-			case ReleasePhaseFinalize:
-				if !quiet {
-					console.Step(fmt.Sprintf("[dry-run] Would tag exact origin/%s commit %s as %s", protectedBranch, releasePlan.head, tagName))
-					console.Step(fmt.Sprintf("[dry-run] Would push only immutable tag: %s", tagName))
-				}
-			case ReleasePhaseDirect:
-				if bumpPlan != nil && !quiet {
-					console.Step(fmt.Sprintf("[dry-run] Would bump %s → %s in: %s", bumpPlan.CurrentVersion, bumpPlan.NewVersion, strings.Join(bumpPlan.ChangedFiles(), ", ")))
-				}
-				if tagFlag && !quiet {
-					console.Step(fmt.Sprintf("[dry-run] Would commit only: %s", strings.Join(bumpPlan.ChangedFiles(), ", ")))
-					console.Step(fmt.Sprintf("[dry-run] Would create tag: %s", tagName))
-					if pushFlag {
-						console.Step("[dry-run] Would atomically push branch and tag")
-					}
-				}
-			}
-			if publish && !quiet {
-				console.Step("[dry-run] Would publish release draft to provider")
-			}
-			if confluenceFlag && !quiet {
-				console.Step("[dry-run] Would publish to Confluence")
-			}
-			if accumulateChangelog {
-				if !quiet {
-					console.Step("[dry-run] Would accumulate changelog")
-				}
-			}
-			if htmlFlag && !quiet {
-				console.Step("[dry-run] Would write an HTML report")
-			}
-			if trendSnapshotPath != "" && !quiet {
-				console.Step(fmt.Sprintf("[dry-run] Would write trend snapshot: %s", trendSnapshotPath))
-			}
-			fmt.Fprintf(os.Stderr, "Plan fingerprint: %s\n", releasePlan.Fingerprint())
-			switch releasePhase {
-			case ReleasePhasePrepare:
-				fmt.Fprintf(os.Stderr, "Next: %s\n", approvalCommand(releasePhase, releasePlan.Fingerprint()))
-			case ReleasePhaseFinalize:
-				fmt.Fprintf(os.Stderr, "Next: after required CI is green, run `%s`\n", approvalCommand(releasePhase, releasePlan.Fingerprint()))
-			case ReleasePhaseDirect:
-				fmt.Fprintf(os.Stderr, "Next: %s\n", approvalCommand(releasePhase, releasePlan.Fingerprint()))
+			if err := (releaseDryRunView{
+				Plan:              releasePlan,
+				Phase:             releasePhase,
+				Bump:              bumpPlan,
+				ProtectedBranch:   protectedBranch,
+				ReleaseBranch:     releaseBranch,
+				TagName:           tagName,
+				TagRequested:      tagFlag,
+				PushRequested:     pushFlag,
+				PublishRequested:  publish,
+				Confluence:        confluenceFlag,
+				Changelog:         accumulateChangelog,
+				HTML:              htmlFlag,
+				TrendSnapshotPath: trendSnapshotPath,
+				Quiet:             quiet,
+			}).Render(os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "Error rendering release plan: %v\n", err)
+				os.Exit(1)
 			}
 		}
 		if extensionMode == "confluence" && !quiet {
 			console.Step("[dry-run] Would publish release notes to Confluence")
 		}
-		_, _ = os.Stdout.Write(output)
+		if planJSON {
+			planOutput, planErr := releasePlan.JSON()
+			if planErr != nil {
+				fmt.Fprintf(os.Stderr, "Error encoding release plan: %v\n", planErr)
+				os.Exit(1)
+			}
+			_, _ = os.Stdout.Write(planOutput)
+		} else {
+			_, _ = os.Stdout.Write(output)
+		}
 		return
 	}
 
@@ -678,42 +602,12 @@ func main() {
 	}
 	coreResult := &CoreReleaseApplyResult{State: &ApplyState{}}
 	if releaseMode {
-		if err := releasePlan.RequireApproval(approvePlan); err != nil {
-			writeReleasePlanError(os.Stderr, err)
-			os.Exit(2)
-		}
-		switch releasePhase {
-		case ReleasePhasePrepare:
-			tagResult, err = releasePlan.ApplyProtectedPrepare(ctx)
-			coreResult.Tag = tagResult
-			if err == nil {
-				coreResult.State.completed = append(coreResult.State.completed, "protected release prepare")
-			}
-		case ReleasePhaseFinalize:
-			tagResult, err = releasePlan.ApplyProtectedFinalize(ctx)
-			coreResult.Tag = tagResult
-			if err == nil {
-				coreResult.State.completed = append(coreResult.State.completed, "protected release finalize")
-			}
-			if err == nil && publishOperation != nil {
-				if verifyErr := releasePlan.VerifyRemoteRef(ctx); verifyErr != nil {
-					err = coreResult.State.Failure("immutable remote release ref verification", verifyErr)
-				} else if ref, ok := releasePlan.RemoteRef(); !ok {
-					err = coreResult.State.Failure("provider publish", fmt.Errorf("release plan has no remote ref"))
-				} else {
-					coreResult.PublishURL, err = publishOperation(ctx, ref)
-					if err != nil {
-						err = coreResult.State.Failure("provider publish", err)
-					}
-				}
-			}
-		case ReleasePhaseDirect:
-			coreResult, err = ApplyCoreRelease(ctx, CoreReleaseApplyRequest{
-				Plan: releasePlan, PublishProvider: publishOperation,
-			})
-			tagResult = coreResult.Tag
-		}
+		coreResult, err = ApplyApprovedRelease(ctx, releasePlan, approvePlan, publishOperation)
 		if err != nil {
+			if coreResult == nil {
+				writeReleasePlanError(os.Stderr, err)
+				os.Exit(2)
+			}
 			fmt.Fprintf(os.Stderr, "Error applying release plan: %v\n", err)
 			os.Exit(1)
 		}

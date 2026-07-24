@@ -7,6 +7,7 @@ set -euo pipefail
 
 VERIFY_SOURCE_IDENTITY="${VERIFY_SOURCE_IDENTITY:-true}"
 VERIFY_MODULE_INSTALLS="${VERIFY_MODULE_INSTALLS:-true}"
+VERIFY_RELEASE_RECEIPT="${VERIFY_RELEASE_RECEIPT:-true}"
 SOURCE_DIGEST="${SOURCE_DIGEST:-}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-12}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-10}"
@@ -27,10 +28,10 @@ if [[ ! "${RETRY_DELAY_SECONDS}" =~ ^[0-9]+$ ]] || [ "${RETRY_DELAY_SECONDS}" -g
   echo "RETRY_DELAY_SECONDS must be an integer from 0 to 60" >&2
   exit 2
 fi
-case "${VERIFY_SOURCE_IDENTITY}:${VERIFY_MODULE_INSTALLS}" in
-  true:true | true:false | false:true | false:false) ;;
+case "${VERIFY_SOURCE_IDENTITY}:${VERIFY_MODULE_INSTALLS}:${VERIFY_RELEASE_RECEIPT}" in
+  true:true:true | true:true:false | true:false:true | true:false:false | false:true:true | false:true:false | false:false:true | false:false:false) ;;
   *)
-    echo "VERIFY_SOURCE_IDENTITY and VERIFY_MODULE_INSTALLS must be true or false" >&2
+    echo "VERIFY_SOURCE_IDENTITY, VERIFY_MODULE_INSTALLS, and VERIFY_RELEASE_RECEIPT must be true or false" >&2
     exit 2
     ;;
 esac
@@ -125,13 +126,19 @@ retry "published GitHub release" release_is_published
 
 verification_root="$(mktemp -d)"
 trap 'rm -rf "${verification_root}"' EXIT
-gh release download "${RELEASE_TAG}" \
-  --repo "${REPOSITORY}" \
-  --dir "${verification_root}" \
-  --pattern 'patchlog_*.tar.gz' \
-  --pattern 'SHA256SUMS' \
-  --pattern 'patchlog.rb' \
+download_args=(
+  "${RELEASE_TAG}"
+  --repo "${REPOSITORY}"
+  --dir "${verification_root}"
+  --pattern 'patchlog_*.tar.gz'
+  --pattern 'SHA256SUMS'
+  --pattern 'patchlog.rb'
   --pattern 'patchlog.json'
+)
+if [ "${VERIFY_RELEASE_RECEIPT}" = "true" ]; then
+  download_args+=(--pattern 'patchlog-release-receipt.json')
+fi
+gh release download "${download_args[@]}"
 
 (
   cd "${verification_root}"
@@ -153,6 +160,39 @@ for archive in "${archives[@]}"; do
   fi
   retry "provenance for ${archive}" verify_attestation "${archive_path}"
 done
+
+if [ "${VERIFY_RELEASE_RECEIPT}" = "true" ]; then
+  receipt="${verification_root}/patchlog-release-receipt.json"
+  if [ ! -f "${receipt}" ]; then
+    echo "missing release receipt" >&2
+    exit 1
+  fi
+  python3 - "${receipt}" "${RELEASE_TAG}" "${REPOSITORY}" "${SOURCE_DIGEST}" <<'PY'
+import json
+import sys
+
+path, tag, repository, source_digest = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    receipt = json.load(handle)
+expected = {
+    "schema": "https://patchlog.dev/schemas/release-receipt/v1",
+    "schema_version": 1,
+    "phase": "finalize",
+    "repository": repository,
+    "source_commit": source_digest,
+    "tag": tag,
+}
+for field, value in expected.items():
+    if receipt.get(field) != value:
+        raise SystemExit(f"release receipt {field}={receipt.get(field)!r}, expected {value!r}")
+fingerprint = receipt.get("plan_fingerprint", "")
+if not fingerprint.startswith("sha256:") or len(fingerprint) != 71:
+    raise SystemExit("release receipt has an invalid plan fingerprint")
+if not receipt.get("artifacts"):
+    raise SystemExit("release receipt has no artifact subjects")
+PY
+  retry "provenance for release receipt" verify_attestation "${receipt}"
+fi
 
 archive_root="${verification_root}/archive"
 mkdir -p "${archive_root}"

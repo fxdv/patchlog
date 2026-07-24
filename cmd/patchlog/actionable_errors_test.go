@@ -35,6 +35,7 @@ func TestPreflightRejectionCategoryDoesNotExposeDetails(t *testing.T) {
 		"protected branch is not current: local main is abc, origin/main is def":           "stale_protected_branch",
 		"local release branch release/v1.2.3 already exists":                               "occupied_release_branch",
 		"approved plan sha256:old does not match current plan sha256:new":                  "stale_fingerprint",
+		"GitHub required check \"quality\" is not satisfied":                               "commit_policy",
 		"publish preflight missing required configuration: provider.token":                 "missing_configuration",
 		"detect repository version: detect version in Cargo.toml: version field not found": "version_detection",
 	}

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/fxdv/patchlog/pkg/bump"
+	"github.com/fxdv/patchlog/pkg/commitpolicy"
 	"github.com/fxdv/patchlog/pkg/config"
 	"github.com/fxdv/patchlog/pkg/confluence"
 	"github.com/fxdv/patchlog/pkg/gittag"
@@ -61,6 +63,7 @@ type ReleasePlanRequest struct {
 	TrendSnapshotPath string
 	RenderedOutput    []byte
 	Configuration     config.Config
+	PolicyVerifier    commitpolicy.Verifier
 }
 
 // ReleasePlan is the single immutable description of every requested release
@@ -85,6 +88,9 @@ type ReleasePlan struct {
 	actions            []string
 	fingerprint        string
 	manager            *gittag.Manager
+	policyVerifier     commitpolicy.Verifier
+	policyEvidence     *commitpolicy.Evidence
+	policyRepository   string
 }
 
 func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, error) {
@@ -173,6 +179,19 @@ func NewReleasePlan(ctx context.Context, req ReleasePlanRequest) (*ReleasePlan, 
 		if err := manager.ValidateProtectedFinalize(ctx, plan.protectedBranch, plan.tagName); err != nil {
 			return nil, fmt.Errorf("protected finalize preflight: %w", err)
 		}
+		plan.policyVerifier = req.PolicyVerifier
+		plan.policyRepository = strings.TrimSpace(req.Configuration.Provider.Repo)
+		if plan.policyVerifier == nil {
+			plan.policyVerifier, err = newCommitPolicyVerifier(req.Configuration)
+			if err != nil {
+				return nil, fmt.Errorf("protected finalize commit policy: %w", err)
+			}
+		}
+		evidence, err := plan.verifyCommitPolicy(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("protected finalize commit policy: %w", err)
+		}
+		plan.policyEvidence = &evidence
 		plan.actions = append(plan.actions, "annotated tag", "push immutable tag")
 	case ReleasePhaseDirect:
 		if plan.bump != nil {
@@ -382,6 +401,9 @@ func (p *ReleasePlan) Revalidate(ctx context.Context) error {
 		if err := p.manager.ValidateProtectedFinalize(ctx, p.protectedBranch, p.tagName); err != nil {
 			return err
 		}
+		if err := p.revalidateCommitPolicy(ctx); err != nil {
+			return err
+		}
 	case ReleasePhaseDirect:
 		if !p.tagOptions.Tag {
 			return nil
@@ -436,14 +458,56 @@ func (p *ReleasePlan) ApplyProtectedFinalize(ctx context.Context) (*gittag.Resul
 		return nil, fmt.Errorf("release plan changed before finalize: %w", err)
 	}
 	result := &gittag.Result{Tag: p.tagName, Branch: p.protectedBranch}
-	if err := p.manager.CreateTag(ctx, p.tagName, fmt.Sprintf("Release %s", p.tagName)); err != nil {
+	tagMessage := fmt.Sprintf("Release %s\n\nPatchlog-Plan: %s", p.tagName, p.fingerprint)
+	if err := p.manager.CreateTag(ctx, p.tagName, tagMessage); err != nil {
 		return result, err
+	}
+	if err := p.revalidateCommitPolicy(ctx); err != nil {
+		deleteErr := p.manager.DeleteTag(ctx, p.tagName)
+		return result, errors.Join(fmt.Errorf("commit policy changed immediately before tag push: %w", err), deleteErr)
 	}
 	if err := p.manager.PushTag(ctx, p.tagName); err != nil {
 		return result, fmt.Errorf("local immutable tag %s remains after push failure: %w", p.tagName, err)
 	}
 	result.Pushed = true
 	return result, nil
+}
+
+func (p *ReleasePlan) verifyCommitPolicy(ctx context.Context) (commitpolicy.Evidence, error) {
+	if p == nil || p.policyVerifier == nil {
+		return commitpolicy.Evidence{}, fmt.Errorf("commit-policy verifier is unavailable")
+	}
+	req := commitpolicy.Request{
+		Repository: p.policyRepository,
+		Branch:     p.protectedBranch,
+		Commit:     p.head,
+	}
+	evidence, err := p.policyVerifier.Verify(ctx, req)
+	if err != nil {
+		return commitpolicy.Evidence{}, err
+	}
+	evidence = evidence.Normalize()
+	if err := evidence.Validate(req); err != nil {
+		return commitpolicy.Evidence{}, err
+	}
+	return evidence, nil
+}
+
+func (p *ReleasePlan) revalidateCommitPolicy(ctx context.Context) error {
+	if p == nil || p.phase != ReleasePhaseFinalize {
+		return nil
+	}
+	if p.policyEvidence == nil {
+		return fmt.Errorf("release plan has no commit-policy evidence")
+	}
+	current, err := p.verifyCommitPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, *p.policyEvidence) {
+		return fmt.Errorf("required-check policy changed after planning")
+	}
+	return nil
 }
 
 func (p *ReleasePlan) ApplyBump() error {

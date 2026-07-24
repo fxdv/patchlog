@@ -2,7 +2,7 @@
 
 Patchlog loads `patchlog.yaml` by default. Unknown and misspelled YAML fields fail validation. Keep the file out of version control when it contains credentials; the repository `.gitignore` excludes it.
 
-The safe core release needs no integration configuration. Start with:
+Protected prepare needs no integration configuration. Start with:
 
 ```bash
 patchlog release --dry-run
@@ -20,9 +20,10 @@ release:
 ```
 
 Prepare requires the local protected branch to match its remote before creating
-`branch_prefix + tag`. Finalize requires that match again before it can create
-and push the annotated tag. Use `patchlog release direct` only for repositories
-that deliberately choose direct commit/tag/push.
+`branch_prefix + tag`. Finalize requires that match again and requires provider
+policy verification before it can create and push the annotated tag. Use
+`patchlog release direct` only for repositories that deliberately choose direct
+commit/tag/push.
 
 If a configuration file cannot be decoded or validated, the diagnostic names
 its path and tells you to run `patchlog init` or fix the reported field before
@@ -51,7 +52,7 @@ that require coordinated member-manifest updates must keep that coordination
 in their existing build tooling and run it before Patchlog planning, or remain
 on an explicitly documented custom release workflow.
 
-## Optional provider configuration
+## Provider and commit-policy configuration
 
 ```yaml
 repo: fxdv/patchlog
@@ -62,9 +63,21 @@ provider:
   token: ${GITHUB_TOKEN}
 ```
 
-`provider.type`, `provider.repo`, and `provider.token` are preflighted before a
-publishing release can mutate state. Provider configuration has no effect on
-protected prepare.
+Provider configuration has no effect on protected prepare. Protected finalize
+currently requires `provider.type: github` and uses the configured repository
+to discover classic branch protection and applicable repository rules. It then
+proves every required check succeeded for the exact finalize SHA.
+
+For private repositories, and for branch-policy endpoints that do not allow
+anonymous reads, use a fine-grained token with read access to repository
+administration and checks. Provider publication may require additional content
+permissions. Tokens are expanded from environment variables and are never
+included in plan JSON, fingerprints, receipts, or diagnostics.
+
+GitLab and Gitea remain available to the explicit direct compatibility
+workflow. Their protected finalize policy adapters are outside the stable 0.2
+contract until they can prove provider-required checks with equivalent
+semantics.
 
 ## AI disclosure and controls
 

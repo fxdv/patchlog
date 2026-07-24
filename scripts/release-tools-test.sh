@@ -42,6 +42,21 @@ ruby -c "${dist_dir}/patchlog.rb"
 python3 -m json.tool "${dist_dir}/patchlog.json" >/dev/null
 grep -F '"version": "9.8.7"' "${dist_dir}/patchlog.json"
 
+RELEASE_TAG="${version}" \
+  SOURCE_DIGEST="0123456789abcdef0123456789abcdef01234567" \
+  PLAN_FINGERPRINT="sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
+  REPOSITORY="example/patchlog" \
+  DIST_DIR="${dist_dir}" \
+  bash scripts/render-release-receipt.sh
+python3 -m json.tool "${dist_dir}/patchlog-release-receipt.json" >/dev/null
+grep -F '"schema": "https://patchlog.dev/schemas/release-receipt/v1"' "${dist_dir}/patchlog-release-receipt.json"
+grep -F '"plan_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"' "${dist_dir}/patchlog-release-receipt.json"
+python3 -m json.tool docs/schemas/release-plan-v1.schema.json >/dev/null
+python3 -m json.tool docs/schemas/release-receipt-v1.schema.json >/dev/null
+
+python3 scripts/product-metrics.py > "${test_root}/metrics.json"
+cmp "${test_root}/metrics.json" docs/evidence/metrics.json
+
 readonly_install_root="${test_root}/readonly-module-cache"
 mkdir -p "${readonly_install_root}/module"
 printf 'module cache\n' > "${readonly_install_root}/module/file.go"
@@ -58,4 +73,5 @@ if [ -e "${readonly_install_root}" ]; then
 fi
 
 bash -n scripts/render-package-manifests.sh
+bash -n scripts/render-release-receipt.sh
 bash -n scripts/verify-release.sh

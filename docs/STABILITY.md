@@ -23,8 +23,10 @@ Protected planning selects only reachable stable tags matching
 tags cannot steer the stable release phase.
 
 Direct commit/tag/push requires the explicit `release direct` compatibility
-workflow. AI, Confluence, metrics, and labs use focused subcommands and cannot
-silently join the protected transaction.
+workflow. No mutation flag may select direct mode implicitly. A manual protected
+bump uses `release prepare --bump LEVEL`; `release --bump LEVEL` is rejected.
+AI, Confluence, metrics, and labs use focused subcommands and cannot silently
+join the protected transaction.
 Exit-code meanings and documented core flags will remain compatible throughout
 the 0.2.x line.
 
@@ -42,9 +44,17 @@ provide a concrete recovery command.
 
 One immutable release plan owns every requested mutation. Its SHA-256
 fingerprint covers phase, HEAD, branch identities, versions, tag, actions,
-exact file paths, modes, and before/after content hashes. Every mutation
-requires approval of the exact current fingerprint. Apply revalidates
-repository and remote state immediately before mutation.
+exact file paths, modes, before/after content hashes, and stable required-check
+policy evidence. Every mutation requires approval of the exact current
+fingerprint. Apply revalidates repository, remote, and provider policy state.
+Finalize proves the exact SHA satisfies every required GitHub check and repeats
+that verification immediately before the remote tag push.
+
+`--plan-json` exports the
+[`release-plan/v1`](schemas/release-plan-v1.schema.json) schema to stdout
+during immutable dry-run. Every normal release publishes and attests
+`patchlog-release-receipt.json` using the
+[`release-receipt/v1`](schemas/release-receipt-v1.schema.json) schema.
 
 ## Release trust loop
 
@@ -59,6 +69,8 @@ Every normal tag-triggered release must automatically:
 7. verify archive provenance against the release workflow and tag commit;
 8. execute an archive and verify its reported version;
 9. install `@version` and stable `@latest` from a fresh Go environment.
+10. install the Homebrew formula on macOS and the Scoop manifest on Windows.
+11. verify the checksummed, attested release receipt.
 
 A release workflow tag is therefore restricted to stable
 `vMAJOR.MINOR.PATCH`. A future prerelease channel must define and test its own
@@ -70,27 +82,27 @@ claiming that an older tag is `@latest`.
 
 ## Distribution contract
 
-The live `fxdv/homebrew-tap` channel consumes an automatically checksum-pinned
-manifest. The tap installs and tests a candidate before updating, and the
-Patchlog release trust loop independently installs the published formula on
-macOS. Scoop follows as the next channel.
+The live `fxdv/homebrew-tap` and `fxdv/scoop-bucket` channels consume
+checksum-pinned manifests rendered from explicit release archives. Artifact
+construction stays in the release workflow; package repositories distribute
+only manifests. Patchlog independently installs the published Homebrew formula
+on macOS and Scoop manifest on Windows.
 
 ## Real-repository evidence
 
-Before 0.2.0, record successful immutable dry-run and Apply behavior in at least
-three repositories that differ in layout or release history. Evidence should
+Before 0.2.0, record successful immutable dry-run and Apply behavior in at
+least three repositories controlled by maintainers unrelated to Patchlog.
+Evidence should
 include the Patchlog version, repository commit, plan output, exact changed-file
 list, resulting tag target, CI result, and any recovery required. Do not include
 credentials or proprietary release content.
 
-Patchlog itself is the dogfood repository. Two additional repositories are
-represented by both local bare-remote compatibility validations and public
-hosted mirrors, including one multi-manifest Python repository and one
-Rust/Python repository. Both hosted repetitions used enforced pull requests,
-strict required CI, squash merging, separately green post-merge main commits,
-and annotated tags targeting those exact commits. The source repositories were
-not mutated. Evidence uses the schema in `docs/evidence` and feeds the product
-measurements defined in `docs/PRODUCT_METRICS.md`.
+Patchlog itself and two maintainer-controlled public mirrors provide engineering
+evidence, including multi-manifest Python and Rust/Python layouts. They do not
+count toward the unrelated-maintainer launch gate. That gate remains 0/3 until
+independent repository owners authorize and complete production validations.
+Evidence uses the schema in `docs/evidence` and feeds the product measurements
+defined in `docs/PRODUCT_METRICS.md`.
 
 Rust virtual workspaces with a root `[workspace]` table and no root
 `[package].version` are outside the 0.2.x automatic multi-member bump contract.

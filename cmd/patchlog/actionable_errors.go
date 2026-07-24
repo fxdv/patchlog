@@ -62,9 +62,11 @@ func preflightRejectionCategory(err error) string {
 	switch {
 	case containsAny("does not match current plan", "changed after planning"):
 		return "stale_fingerprint"
+	case containsAny("commit-policy", "commit policy", "required check", "required status checks"):
+		return "commit_policy"
 	case containsAny("clean worktree", "working tree", "worktree; found"):
 		return "dirty_worktree"
-	case containsAny("protected branch is not current", "green protected commit mismatch"):
+	case containsAny("protected branch is not current", "protected commit mismatch"):
 		return "stale_protected_branch"
 	case strings.Contains(message, "release branch") && strings.Contains(message, "already exists"):
 		return "occupied_release_branch"
