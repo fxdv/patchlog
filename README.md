@@ -5,6 +5,21 @@ commit history into a fingerprinted release plan, prepares an isolated
 version-bump branch for review, proves the exact protected-branch commit passed
 its required checks, then creates the immutable release tag.
 
+## Why Patchlog
+
+Most teams do not need another release tool. If one CI job already turns one
+commit into one trustworthy artifact, keep that system. Patchlog is for the
+point at which a release becomes a distributed transaction across Git, branch
+protection, CI, provider APIs, registries, changelogs, and package managers:
+each step can succeed locally while the release as a whole is still wrong.
+
+The failure mode is not insufficient automation; it is automation without a
+shared proof of intent. Patchlog makes the reviewed plan the unit of release,
+binds approval to its content fingerprint, verifies policy against the exact
+commit, and emits evidence of what was actually published. Its core value is
+closing the gap between “this is what we approved” and “this is what the world
+received.”
+
 ## Safe protected release
 
 From a clean repository with a version file:
