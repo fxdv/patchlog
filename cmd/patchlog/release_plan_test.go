@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,9 +10,55 @@ import (
 	"testing"
 
 	"github.com/fxdv/patchlog/pkg/bump"
+	"github.com/fxdv/patchlog/pkg/commitpolicy"
 	"github.com/fxdv/patchlog/pkg/config"
 	"github.com/fxdv/patchlog/pkg/gittag"
 )
+
+type staticPolicyVerifier struct {
+	evidence commitpolicy.Evidence
+	err      error
+	calls    int
+}
+
+type expiringPolicyVerifier struct {
+	*staticPolicyVerifier
+	failAt int
+}
+
+func (v *expiringPolicyVerifier) Verify(ctx context.Context, req commitpolicy.Request) (commitpolicy.Evidence, error) {
+	if v.staticPolicyVerifier.calls+1 == v.failAt {
+		v.staticPolicyVerifier.calls++
+		return commitpolicy.Evidence{}, errors.New("required check quality changed to failure")
+	}
+	return v.staticPolicyVerifier.Verify(ctx, req)
+}
+
+func (v *staticPolicyVerifier) Verify(_ context.Context, _ commitpolicy.Request) (commitpolicy.Evidence, error) {
+	v.calls++
+	return v.evidence, v.err
+}
+
+func protectedTestConfig() config.Config {
+	cfg := config.Default()
+	cfg.Provider.Type = "github"
+	cfg.Provider.Repo = "owner/repo"
+	return cfg
+}
+
+func successfulPolicyVerifier(commit string) *staticPolicyVerifier {
+	return &staticPolicyVerifier{evidence: commitpolicy.Evidence{
+		SchemaVersion: commitpolicy.EvidenceSchemaVersion,
+		Provider:      "github",
+		Repository:    "owner/repo",
+		Branch:        "main",
+		Commit:        commit,
+		RequiredChecks: []commitpolicy.RequiredCheck{{
+			Context:       "quality",
+			IntegrationID: 15368,
+		}},
+	}}
+}
 
 func initReleasePlanRepo(t *testing.T) string {
 	t.Helper()
@@ -344,11 +391,125 @@ func TestProtectedFinalizeRejectsLocalCommitNotOnRemoteMain(t *testing.T) {
 		TagOptions:      gittag.Options{Tag: true, Push: true},
 		Configuration:   config.Default(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "green protected commit mismatch") {
+	if err == nil || !strings.Contains(err.Error(), "protected commit mismatch") {
 		t.Fatalf("finalize mismatch error = %v", err)
 	}
 	if tags := strings.TrimSpace(gitCommandOutput(t, repo, "tag", "--list", "v0.1.1")); tags != "" {
 		t.Fatalf("failed finalize created tag %q", tags)
+	}
+}
+
+func TestProtectedFinalizeRevalidatesCommitPolicyImmediatelyBeforePush(t *testing.T) {
+	repo := initProtectedReleasePlanRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "VERSION"), []byte("0.1.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repo, "add", "VERSION")
+	runGitCommand(t, repo, "commit", "-m", "chore(release): 0.1.1")
+	runGitCommand(t, repo, "push", "origin", "main")
+	head := strings.TrimSpace(gitCommandOutput(t, repo, "rev-parse", "HEAD"))
+	verifier := successfulPolicyVerifier(head)
+	plan, err := NewReleasePlan(context.Background(), ReleasePlanRequest{
+		Repo:            repo,
+		Phase:           ReleasePhaseFinalize,
+		TagName:         "v0.1.1",
+		TargetVersion:   "0.1.1",
+		ProtectedBranch: "main",
+		TagOptions:      gittag.Options{Tag: true, Push: true},
+		Configuration:   protectedTestConfig(),
+		PolicyVerifier:  verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := plan.ApplyProtectedFinalize(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Pushed || verifier.calls != 3 {
+		t.Fatalf("finalize result = %#v, policy verification calls = %d, want 3", result, verifier.calls)
+	}
+	tagMessage := gitCommandOutput(t, repo, "for-each-ref", "--format=%(contents)", "refs/tags/v0.1.1")
+	if !strings.Contains(tagMessage, "Patchlog-Plan: "+plan.Fingerprint()) {
+		t.Fatalf("tag message does not bind the approved plan:\n%s", tagMessage)
+	}
+}
+
+func TestReleasePlanJSONIsVersionedAndIncludesPolicyEvidence(t *testing.T) {
+	repo := initProtectedReleasePlanRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "VERSION"), []byte("0.1.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repo, "add", "VERSION")
+	runGitCommand(t, repo, "commit", "-m", "chore(release): 0.1.1")
+	runGitCommand(t, repo, "push", "origin", "main")
+	head := strings.TrimSpace(gitCommandOutput(t, repo, "rev-parse", "HEAD"))
+	plan, err := NewReleasePlan(context.Background(), ReleasePlanRequest{
+		Repo:            repo,
+		Phase:           ReleasePhaseFinalize,
+		TagName:         "v0.1.1",
+		TargetVersion:   "0.1.1",
+		ProtectedBranch: "main",
+		TagOptions:      gittag.Options{Tag: true, Push: true},
+		Configuration:   protectedTestConfig(),
+		PolicyVerifier:  successfulPolicyVerifier(head),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := plan.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`"schema": "https://patchlog.dev/schemas/release-plan/v1"`,
+		`"schema_version": 1`,
+		`"fingerprint": "sha256:`,
+		`"commit_policy"`,
+		`"context": "quality"`,
+		`"files": []`,
+	} {
+		if !strings.Contains(string(raw), expected) {
+			t.Fatalf("release plan JSON missing %q:\n%s", expected, raw)
+		}
+	}
+}
+
+func TestProtectedFinalizeRollsBackLocalTagWhenPolicyExpiresBeforePush(t *testing.T) {
+	repo := initProtectedReleasePlanRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "VERSION"), []byte("0.1.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repo, "add", "VERSION")
+	runGitCommand(t, repo, "commit", "-m", "chore(release): 0.1.1")
+	runGitCommand(t, repo, "push", "origin", "main")
+	head := strings.TrimSpace(gitCommandOutput(t, repo, "rev-parse", "HEAD"))
+	verifier := &expiringPolicyVerifier{
+		staticPolicyVerifier: successfulPolicyVerifier(head),
+		failAt:               3,
+	}
+	plan, err := NewReleasePlan(context.Background(), ReleasePlanRequest{
+		Repo:            repo,
+		Phase:           ReleasePhaseFinalize,
+		TagName:         "v0.1.1",
+		TargetVersion:   "0.1.1",
+		ProtectedBranch: "main",
+		TagOptions:      gittag.Options{Tag: true, Push: true},
+		Configuration:   protectedTestConfig(),
+		PolicyVerifier:  verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plan.ApplyProtectedFinalize(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "immediately before tag push") {
+		t.Fatalf("expired policy error = %v", err)
+	}
+	if tags := strings.TrimSpace(gitCommandOutput(t, repo, "tag", "--list", "v0.1.1")); tags != "" {
+		t.Fatalf("expired policy left local tag %q", tags)
+	}
+	if remote := strings.TrimSpace(gitCommandOutput(t, repo, "ls-remote", "origin", "refs/tags/v0.1.1")); remote != "" {
+		t.Fatalf("expired policy pushed remote tag %q", remote)
 	}
 }
 

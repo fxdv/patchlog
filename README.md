@@ -2,8 +2,8 @@
 
 Patchlog is a safe release coordinator for protected Git repositories. It turns
 commit history into a fingerprinted release plan, prepares an isolated
-version-bump branch for review, then tags only the exact green commit merged to
-the protected branch.
+version-bump branch for review, proves the exact protected-branch commit passed
+its required checks, then creates the immutable release tag.
 
 ## Safe protected release
 
@@ -12,6 +12,9 @@ From a clean repository with a version file:
 ```bash
 # Universal immutable plan. It prints an exact approval fingerprint.
 patchlog release --dry-run
+
+# Optional machine-readable contract; stdout is versioned JSON.
+patchlog release --dry-run --plan-json --quiet
 
 # Apply only that approved plan: create, commit, and push release/vX.Y.Z.
 patchlog release prepare --approve sha256:<fingerprint>
@@ -26,9 +29,10 @@ patchlog release finalize --approve sha256:<fingerprint>
 ```
 
 Finalize revalidates that local and remote protected-branch commits match,
-creates an annotated tag on that exact commit, and pushes only the immutable
-tag. The default path does not call AI, write analytics, contact Confluence, or
-combine optional extensions with the protected transaction.
+queries GitHub for the branch's required checks on that exact SHA, checks the
+policy again immediately before tag push, and binds the approved fingerprint
+into the annotated tag. The default path does not call AI, write analytics,
+contact Confluence, or combine optional extensions with the transaction.
 
 ## Install
 
@@ -39,7 +43,10 @@ go install github.com/fxdv/patchlog/cmd/patchlog@latest
 patchlog --version
 ```
 
-Release archives and `SHA256SUMS` are published on the [GitHub releases page](https://github.com/fxdv/patchlog/releases). Archives also receive signed Sigstore provenance attestations, verifiable with `gh attestation verify <archive> --repo fxdv/patchlog`.
+Release archives and `SHA256SUMS` are published on the [GitHub releases page](https://github.com/fxdv/patchlog/releases). Archives and the versioned
+[`patchlog-release-receipt.json`](docs/schemas/release-receipt-v1.schema.json)
+receive signed Sigstore provenance attestations, verifiable with
+`gh attestation verify <file> --repo fxdv/patchlog`.
 
 Homebrew is live and installation-tested automatically:
 
@@ -52,7 +59,15 @@ patchlog --version
 The [fxdv/homebrew-tap](https://github.com/fxdv/homebrew-tap) synchronizes the
 checksum-pinned formula from stable Patchlog releases and installs/tests it
 before committing an update. The Patchlog release workflow independently tests
-the published formula on macOS. Scoop remains a planned second channel.
+the published formula on macOS.
+
+Scoop is also checksum-pinned and installation-tested on Windows:
+
+```powershell
+scoop bucket add fxdv https://github.com/fxdv/scoop-bucket
+scoop install fxdv/patchlog
+patchlog --version
+```
 
 ## Read-only notes
 
@@ -71,7 +86,9 @@ patchlog labs --gamify
 ```
 
 Direct commit/tag/push remains available only as the explicit
-`patchlog release direct` compatibility workflow.
+`patchlog release direct` compatibility workflow. Flags never select it
+implicitly; for example, a manual protected bump is
+`patchlog release prepare --bump patch --dry-run`.
 
 ## Documentation
 

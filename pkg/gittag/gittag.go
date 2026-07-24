@@ -206,6 +206,18 @@ func (m *Manager) PushTag(ctx context.Context, tag string) error {
 	return nil
 }
 
+// DeleteTag removes only a local tag. It is used to roll back a finalize when
+// provider policy changes after local tag creation but before the remote push.
+func (m *Manager) DeleteTag(ctx context.Context, tag string) error {
+	if err := m.validateTagName(ctx, tag); err != nil {
+		return err
+	}
+	if err := m.runGitWithEnv(ctx, os.Environ(), "tag", "-d", "--", tag); err != nil {
+		return fmt.Errorf("delete local tag %s: %w", tag, err)
+	}
+	return nil
+}
+
 func (m *Manager) Stage(ctx context.Context, files []string) error {
 	if len(files) == 0 {
 		return nil
@@ -407,7 +419,7 @@ func (m *Manager) ValidateProtectedFinalize(ctx context.Context, protectedBranch
 		return err
 	}
 	if remoteHead != head {
-		return fmt.Errorf("green protected commit mismatch: local %s is %s, origin/%s is %s", protectedBranch, head, protectedBranch, remoteHead)
+		return fmt.Errorf("protected commit mismatch: local %s is %s, origin/%s is %s", protectedBranch, head, protectedBranch, remoteHead)
 	}
 	if exists, err := m.TagExists(ctx, tag); err != nil {
 		return err

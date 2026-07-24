@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -57,23 +58,60 @@ func TestParseCLIExplicitDirectModeRetainsDirectDefaults(t *testing.T) {
 	}
 }
 
-func TestParseCLIExplicitReleaseActionPreservesUserSelection(t *testing.T) {
-	opts, _, err := parseCLI([]string{"release", "--bump", "minor"}, io.Discard)
+func TestParseCLIManualBumpRequiresProtectedPrepare(t *testing.T) {
+	_, _, err := parseCLI([]string{"release", "--bump", "minor"}, io.Discard)
+	if err == nil || !containsAll(err.Error(), "prepare", "--bump minor", "--dry-run") {
+		t.Fatalf("manual bump error = %v", err)
+	}
+
+	opts, _, err := parseCLI([]string{"release", "prepare", "--bump", "minor", "--dry-run"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.releaseAction != "direct" || opts.bumpLevel != "minor" || opts.tag || opts.push {
-		t.Fatalf("explicit release selection changed: action=%q, bump %q, tag=%v, push=%v", opts.releaseAction, opts.bumpLevel, opts.tag, opts.push)
+	if opts.releaseAction != "prepare" || opts.bumpLevel != "minor" || opts.tag || opts.push {
+		t.Fatalf("protected prepare = action %q, bump %q, tag=%v, push=%v", opts.releaseAction, opts.bumpLevel, opts.tag, opts.push)
 	}
 }
 
-func TestParseCLIForceDoesNotSilentlySelectDirectMode(t *testing.T) {
-	opts, _, err := parseCLI([]string{"release", "--force"}, io.Discard)
+func TestParseCLIDirectOnlyFlagsRequireExplicitDirectMode(t *testing.T) {
+	for _, flag := range []string{"--tag", "--push", "--force", "--changelog"} {
+		_, _, err := parseCLI([]string{"release", flag}, io.Discard)
+		if err == nil || !containsAll(err.Error(), "explicit compatibility mode", "release direct") {
+			t.Errorf("%s error = %v", flag, err)
+		}
+	}
+}
+
+func TestParseCLIPublishRequiresExplicitFinalize(t *testing.T) {
+	_, _, err := parseCLI([]string{"release", "--publish"}, io.Discard)
+	if err == nil || !containsAll(err.Error(), "finalize", "--publish", "--dry-run") {
+		t.Fatalf("publish error = %v", err)
+	}
+	opts, _, err := parseCLI([]string{"release", "finalize", "--publish", "--dry-run"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.releaseAction != "" || opts.bumpLevel != "auto" || opts.tag || opts.push || !opts.force {
-		t.Fatalf("forced safe release = bump %q, tag=%v, push=%v, force=%v", opts.bumpLevel, opts.tag, opts.push, opts.force)
+	if !opts.publish || !opts.tag || !opts.push {
+		t.Fatalf("finalize publish = publish=%v tag=%v push=%v", opts.publish, opts.tag, opts.push)
+	}
+}
+
+func TestParseCLIPlanJSONIsProtectedDryRunOnly(t *testing.T) {
+	for _, args := range [][]string{
+		{"--plan-json"},
+		{"release", "--plan-json"},
+		{"release", "direct", "--dry-run", "--plan-json"},
+	} {
+		if _, _, err := parseCLI(args, io.Discard); err == nil {
+			t.Fatalf("%v unexpectedly accepted --plan-json", args)
+		}
+	}
+	opts, _, err := parseCLI([]string{"release", "--dry-run", "--plan-json"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.planJSON || !opts.dryRun || !opts.releaseMode {
+		t.Fatalf("plan json options = %#v", opts)
 	}
 }
 
@@ -98,4 +136,13 @@ func TestParseCLINoteGenerationDoesNotApplyReleaseDefaults(t *testing.T) {
 	if opts.releaseMode || opts.bumpLevel != "" || opts.tag || opts.push {
 		t.Fatalf("read-only defaults changed: release=%v, bump=%q, tag=%v, push=%v", opts.releaseMode, opts.bumpLevel, opts.tag, opts.push)
 	}
+}
+
+func containsAll(value string, fragments ...string) bool {
+	for _, fragment := range fragments {
+		if !strings.Contains(value, fragment) {
+			return false
+		}
+	}
+	return true
 }

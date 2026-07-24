@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,6 +72,7 @@ func TestE2EDryRunPreservesFilesystemAndGitState(t *testing.T) {
 
 	cmd := exec.Command(bin,
 		"release",
+		"direct",
 		"--repo", repo,
 		"--from", "v0.1.0",
 		"--bump", "patch",
@@ -114,6 +116,39 @@ func TestE2EGoldenPathDryRunPlansSafeReleaseWithoutMutation(t *testing.T) {
 	after := snapshotRepository(t, repo)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("golden-path dry-run changed repository state\nbefore: %#v\nafter: %#v", before, after)
+	}
+}
+
+func TestE2EPlanJSONExportsVersionedImmutablePlan(t *testing.T) {
+	bin := buildBinary(t)
+	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+	before := snapshotRepository(t, repo)
+
+	cmd := exec.Command(bin,
+		"release",
+		"--repo", repo,
+		"--from", "v0.1.0",
+		"--dry-run",
+		"--plan-json",
+		"--quiet",
+	)
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("plan JSON failed: %v", err)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		t.Fatalf("decode plan JSON: %v\n%s", err, raw)
+	}
+	if plan["schema"] != "https://patchlog.dev/schemas/release-plan/v1" ||
+		plan["phase"] != "prepare" ||
+		!strings.HasPrefix(plan["fingerprint"].(string), "sha256:") {
+		t.Fatalf("plan JSON = %#v", plan)
+	}
+
+	after := snapshotRepository(t, repo)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("plan JSON changed repository state\nbefore: %#v\nafter: %#v", before, after)
 	}
 }
 
@@ -192,23 +227,28 @@ func TestE2EProtectedPrepareRequiresExactCurrentApproval(t *testing.T) {
 func TestE2EProtectedFinalizeTagsExactMergedRemoteMain(t *testing.T) {
 	bin := buildBinary(t)
 	repo := createTestRepo(t, []string{"fix: correct release behavior"})
+	providerServer := newMockGitHubServer(t)
+	defer providerServer.Close()
+	writeConfig(t, repo, "", "", providerServer.URL, "github")
+	commitTestConfig(t, repo)
+	cfgPath := filepath.Join(repo, "patchlog.yaml")
 
-	runApprovedCommand(t, bin, "release", "prepare", "--repo", repo, "--from", "v0.1.0")
+	runApprovedCommand(t, bin, "release", "prepare", "--repo", repo, "--from", "v0.1.0", "--config", cfgPath)
 	gitOutput(t, repo, "switch", "main")
 	gitOutput(t, repo, "merge", "--squash", "release/v0.1.1")
 	gitOutput(t, repo, "commit", "-m", "chore(release): prepare v0.1.1")
 	gitOutput(t, repo, "push", "origin", "main")
 
-	universalPlan := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--dry-run")
+	universalPlan := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--config", cfgPath, "--dry-run")
 	planOut, err := universalPlan.CombinedOutput()
 	if err != nil {
 		t.Fatalf("universal finalize planning failed: %v\n%s", err, planOut)
 	}
-	if !strings.Contains(string(planOut), "Would tag exact origin/main commit") {
+	if !strings.Contains(string(planOut), "Would tag exact verified origin/main commit") {
 		t.Fatalf("universal planner did not detect finalize phase:\n%s", planOut)
 	}
 
-	runApprovedCommand(t, bin, "release", "finalize", "--repo", repo, "--from", "v0.1.0")
+	runApprovedCommand(t, bin, "release", "finalize", "--repo", repo, "--from", "v0.1.0", "--config", cfgPath)
 	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
 	localTag := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "v0.1.1^{commit}"))
 	remoteTag := strings.Fields(gitOutput(t, repo, "ls-remote", "origin", "refs/tags/v0.1.1^{}"))
@@ -275,7 +315,7 @@ func TestE2EDirtyTreeFailsBeforeBumpOrTag(t *testing.T) {
 	}
 	versionBefore, _ := os.ReadFile(filepath.Join(repo, "VERSION"))
 
-	cmd := exec.Command(bin, "release", "--repo", repo, "--from", "v0.1.0", "--bump", "patch", "--tag")
+	cmd := exec.Command(bin, "release", "direct", "--repo", repo, "--from", "v0.1.0", "--bump", "patch", "--tag")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("dirty release unexpectedly succeeded:\n%s", out)
@@ -299,6 +339,7 @@ func TestE2EFailedGatePreventsBumpAndTag(t *testing.T) {
 
 	cmd := exec.Command(bin,
 		"release",
+		"direct",
 		"--repo", repo,
 		"--from", "v0.1.0",
 		"--bump", "patch",
@@ -324,7 +365,10 @@ func TestE2EFailedGatePreventsBumpAndTag(t *testing.T) {
 
 func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 	var providerCalls atomic.Int32
-	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveSuccessfulGitHubCommitPolicy(w, r) {
+			return
+		}
 		providerCalls.Add(1)
 		http.Error(w, "provider unavailable", http.StatusInternalServerError)
 	}))
@@ -370,7 +414,10 @@ func TestE2EPartialRemoteFailureStopsLaterOperations(t *testing.T) {
 
 func TestE2EProtectedFinalizeReportsTagBeforeProviderFailure(t *testing.T) {
 	var providerCalls atomic.Int32
-	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveSuccessfulGitHubCommitPolicy(w, r) {
+			return
+		}
 		providerCalls.Add(1)
 		http.Error(w, "provider unavailable", http.StatusInternalServerError)
 	}))
